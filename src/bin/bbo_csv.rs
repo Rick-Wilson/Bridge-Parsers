@@ -2318,6 +2318,9 @@ fn compute_stats(input: &PathBuf, top_n: usize, output: Option<&PathBuf>) -> Res
 
     // Collect stats per player
     let mut player_stats: HashMap<String, PlayerStats> = HashMap::new();
+    // Track partnership deal counts: (player1, player2) -> deal_count
+    // Normalized so player1 < player2 alphabetically
+    let mut partnership_counts: HashMap<(String, String), u64> = HashMap::new();
     let mut processed = 0;
     let mut skipped = 0;
 
@@ -2330,6 +2333,24 @@ fn compute_stats(input: &PathBuf, top_n: usize, output: Option<&PathBuf>) -> Res
         let south = record.get(s_col).unwrap_or("").to_lowercase();
         let east = record.get(e_col).unwrap_or("").to_lowercase();
         let west = record.get(w_col).unwrap_or("").to_lowercase();
+
+        // Track partnerships (N-S and E-W are partners)
+        if !north.is_empty() && !south.is_empty() {
+            let key = if north < south {
+                (north.clone(), south.clone())
+            } else {
+                (south.clone(), north.clone())
+            };
+            *partnership_counts.entry(key).or_insert(0) += 1;
+        }
+        if !east.is_empty() && !west.is_empty() {
+            let key = if east < west {
+                (east.clone(), west.clone())
+            } else {
+                (west.clone(), east.clone())
+            };
+            *partnership_counts.entry(key).or_insert(0) += 1;
+        }
 
         // Get declarer
         let declarer = record.get(dec_col).unwrap_or("").trim().to_uppercase();
@@ -2607,6 +2628,143 @@ fn compute_stats(input: &PathBuf, top_n: usize, output: Option<&PathBuf>) -> Res
     println!("    - Defense error rate LOWER than declaring (positive Diff)");
     println!("    - Def-Decl pattern significantly different from FIELD");
     println!("    - Partners' skill gap narrowing on defense vs declaring");
+    println!("\n  STATISTICAL MEASURES:");
+    println!("    Z-score: How many standard deviations a player's pattern differs from the FIELD.");
+    println!("             Z < -1.96 means suspiciously better defense (only 2.5% chance if honest).");
+    println!("             Z > +1.96 means normal pattern (defense harder than declaring).");
+    println!("    P-value: Probability of seeing this result if the player were honest.");
+    println!("             P < 0.05 = significant (less than 5% chance if honest).");
+    println!("             P < 0.01 = highly significant (less than 1% chance if honest).");
+
+    // Suspicious Players Table: Def-Decl > 0.05% (defense better than declaring) and p < 0.20
+    // Require minimum 50 deals for statistical reliability
+    const MIN_DEALS_FOR_SUSPICIOUS: u64 = 50;
+    let mut suspicious: Vec<_> = players.iter()
+        .filter_map(|p| {
+            // Skip players with insufficient data
+            if p.total_deals() < MIN_DEALS_FOR_SUSPICIOUS {
+                return None;
+            }
+            let def_minus_decl = p.def_minus_decl();
+            // We want defense BETTER than declaring, which means def_err% < decl_err%
+            // def_minus_decl = def% - decl%, so positive means more defense errors (normal)
+            // We want NEGATIVE def_minus_decl (fewer defense errors = suspicious)
+            // But user said "def-decl > 0.05%" - clarifying: they mean improvement in defense
+            // i.e., declaring error rate > defending error rate by more than 0.05%
+            // That's decl% - def% > 0.05, which is def_minus_decl < -0.05
+            if def_minus_decl < -0.05 {
+                let (z, p_val) = z_test_diff_vs_baseline(p, &field_stats);
+                if !p_val.is_nan() && p_val < 0.20 {
+                    Some((p.clone(), def_minus_decl, z, p_val))
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    // Sort by p-value (most significant first)
+    suspicious.sort_by(|a, b| a.3.partial_cmp(&b.3).unwrap_or(std::cmp::Ordering::Equal));
+
+    if !suspicious.is_empty() {
+        // Build set of suspicious player names for partnership lookup
+        let suspicious_names: HashSet<String> = suspicious.iter()
+            .map(|(p, _, _, _)| p.name.clone())
+            .collect();
+
+        // Find partnerships where both players are on the suspicious list
+        // Partnership requires 60% of the smaller player's deals to be with this partner
+        let mut partner_annotations: HashMap<String, usize> = HashMap::new();
+        let mut next_partner_num = 1usize;
+
+        for (player, _, _, _) in &suspicious {
+            if partner_annotations.contains_key(&player.name) {
+                continue; // Already assigned a partnership number
+            }
+
+            // Find this player's most frequent partner who is also suspicious
+            let mut best_partner: Option<(String, u64)> = None;
+            for ((p1, p2), &count) in &partnership_counts {
+                let partner_name = if p1 == &player.name {
+                    p2.clone()
+                } else if p2 == &player.name {
+                    p1.clone()
+                } else {
+                    continue;
+                };
+
+                if suspicious_names.contains(&partner_name) && !partner_annotations.contains_key(&partner_name) {
+                    // Check if this partnership is >= 60% of the smaller player's deals
+                    let partner_stats = suspicious.iter()
+                        .find(|(p, _, _, _)| p.name == partner_name)
+                        .map(|(p, _, _, _)| p);
+
+                    if let Some(partner) = partner_stats {
+                        let min_deals = player.total_deals().min(partner.total_deals());
+                        let partnership_pct = count as f64 / min_deals as f64;
+
+                        if partnership_pct >= 0.60 {
+                            if best_partner.is_none() || count > best_partner.as_ref().unwrap().1 {
+                                best_partner = Some((partner_name.clone(), count));
+                            }
+                        }
+                    }
+                }
+            }
+
+            // If we found a qualifying partner, assign them the same number
+            if let Some((partner_name, _)) = best_partner {
+                partner_annotations.insert(player.name.clone(), next_partner_num);
+                partner_annotations.insert(partner_name, next_partner_num);
+                next_partner_num += 1;
+            }
+        }
+
+        println!("\n{:=^116}", " Suspicious Patterns (Def better than Decl, p < 20%) ");
+        println!("\n{:<24} {:>8} {:>6} {:>6} {:>10} {:>10} {:>12} {:>10} {:>10}",
+            "Player", "Deals", "Decl", "Def", "Decl Err%", "Def Err%", "Def-Decl", "Z-score", "P-value");
+        println!("{:-<120}", "");
+
+        for (player, def_minus_decl, z, p_val) in &suspicious {
+            // Annotate player name with partnership number if applicable
+            let display_name = if let Some(&num) = partner_annotations.get(&player.name) {
+                format!("{} ({})", truncate_name(&player.name, 17), num)
+            } else {
+                truncate_name(&player.name, 24)
+            };
+
+            println!("{:<24} {:>8} {:>6} {:>6} {:>9.2}% {:>9.2}% {:>+11.2}% {:>10.2} {:>9.4}",
+                display_name,
+                player.total_deals(),
+                player.declaring_deals,
+                player.defending_deals,
+                player.declaring_error_rate(),
+                player.defending_error_rate(),
+                def_minus_decl,
+                z,
+                p_val
+            );
+        }
+        println!("{:-<120}", "");
+        println!("Note: These players show defense error rates LOWER than their declaring rates,");
+        println!("      which is unusual (defense is typically harder than declaring).");
+        if !partner_annotations.is_empty() {
+            println!("      Numbers in parentheses indicate players who are partners (60%+ of deals together).");
+        }
+        // Count players with vs without partner annotations
+        let partnered_count = suspicious.iter()
+            .filter(|(p, _, _, _)| partner_annotations.contains_key(&p.name))
+            .count();
+        let non_partnered_count = suspicious.len() - partnered_count;
+        if non_partnered_count > partnered_count {
+            println!("      The majority of flagged players ({} of {}) are NOT partnered with others on this list,",
+                non_partnered_count, suspicious.len());
+            println!("      suggesting the Def-Decl pattern may be driven by factors other than hand-sharing");
+            println!("      (e.g., natural defensive skill, bidding style) and warrants further analysis.");
+        }
+    }
 
     // Write detailed CSV if requested
     if let Some(output_path) = output {
