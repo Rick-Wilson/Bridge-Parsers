@@ -84,6 +84,237 @@ pub struct DdAnalysisResult {
     pub errors: Vec<DdError>,
 }
 
+/// Result of computing DD costs per card
+#[derive(Debug, Clone)]
+pub struct DdCostsResult {
+    /// DD costs per card, organized by trick: costs[trick_idx][card_idx]
+    pub costs: Vec<Vec<u8>>,
+    /// Initial DD result (tricks declarer can make with optimal play)
+    pub initial_dd: u8,
+    /// Declarer seat (NORTH, EAST, SOUTH, WEST)
+    pub declarer_seat: usize,
+    /// Whether declarer is N-S partnership
+    pub declarer_is_ns: bool,
+}
+
+/// Compute DD costs for each card played
+///
+/// This is the core DD analysis function used by both the CLI and library.
+/// It takes raw inputs (PBN deal, cardplay string, contract, declarer) and
+/// returns the DD cost for each card played.
+///
+/// # Arguments
+/// * `deal_pbn` - Deal in PBN format (e.g., "N:AKQ.JT9.876.5432 ...")
+/// * `cardplay` - Cardplay string with tricks separated by `|` and cards by spaces
+///                (e.g., "S4 S2 SA S5|D7 DQ DK DA|...")
+/// * `contract` - Contract string (e.g., "4S", "3NT", "6HX")
+/// * `declarer` - Declarer direction (e.g., "North", "S", "West")
+/// * `debug` - Whether to print debug output
+///
+/// # Returns
+/// DD costs per card per trick, or an error message
+pub fn compute_dd_costs(
+    deal_pbn: &str,
+    cardplay: &str,
+    contract: &str,
+    declarer: &str,
+    debug: bool,
+) -> Result<DdCostsResult, String> {
+    // Parse the deal
+    let mut current_hands = Hands::from_pbn(deal_pbn)
+        .ok_or_else(|| format!("Failed to parse deal: {}", deal_pbn))?;
+
+    // Parse trump suit
+    let trump = parse_trump(contract)?;
+
+    // Parse declarer
+    let declarer_seat = parse_declarer_seat(declarer)?;
+    let initial_leader = (declarer_seat + 1) % 4;
+    let declarer_is_ns = declarer_seat == NORTH || declarer_seat == SOUTH;
+
+    // Parse cardplay into tricks
+    let tricks = parse_cardplay(cardplay)?;
+
+    if tricks.is_empty() {
+        return Ok(DdCostsResult {
+            costs: Vec::new(),
+            initial_dd: 0,
+            declarer_seat,
+            declarer_is_ns,
+        });
+    }
+
+    // Caches for solver
+    let mut cutoff_cache = CutoffCache::new(16);
+    let mut pattern_cache = PatternCache::new(16);
+
+    // Initial DD
+    let initial_ns = solve_position(
+        &current_hands,
+        trump,
+        initial_leader,
+        &mut cutoff_cache,
+        &mut pattern_cache,
+    );
+    let initial_dd = if declarer_is_ns {
+        initial_ns
+    } else {
+        13 - initial_ns
+    };
+
+    let mut all_costs: Vec<Vec<u8>> = Vec::new();
+    let mut declarer_tricks_won: u8 = 0;
+    let mut current_leader = initial_leader;
+
+    // Mid-trick analysis: compute DD before and after every card
+    for (trick_idx, trick) in tricks.iter().enumerate() {
+        let mut card_costs: Vec<u8> = Vec::new();
+        let mut seat = current_leader;
+        let mut partial_trick = PartialTrick::new();
+        let mut cards_in_trick: Vec<(usize, usize)> = Vec::new();
+
+        // Compute DD at start of trick (before any card is played)
+        let trick_start_dd = {
+            let ns = solve_position(
+                &current_hands,
+                trump,
+                current_leader,
+                &mut cutoff_cache,
+                &mut pattern_cache,
+            );
+            if declarer_is_ns {
+                declarer_tricks_won + ns
+            } else {
+                declarer_tricks_won + (current_hands.num_tricks() as u8).saturating_sub(ns)
+            }
+        };
+
+        // Track DD as we progress through the trick
+        let mut current_dd = trick_start_dd;
+
+        for (card_idx, card) in trick.iter().enumerate() {
+            let solver_card = bridge_card_to_solver(*card)?;
+
+            // dd_before is the DD state coming into this card
+            let dd_before = current_dd;
+
+            // Play the card
+            current_hands[seat].remove(solver_card);
+            partial_trick.add(solver_card, seat);
+            cards_in_trick.push((seat, solver_card));
+
+            // Compute DD AFTER this card is played
+            let dd_after = if card_idx == 3 {
+                // Trick complete
+                let winner = determine_trick_winner(&cards_in_trick, trump, current_leader);
+                let declarer_won = if declarer_is_ns {
+                    winner == NORTH || winner == SOUTH
+                } else {
+                    winner == EAST || winner == WEST
+                };
+                let tricks_from_this = if declarer_won { 1u8 } else { 0u8 };
+
+                if current_hands.num_tricks() == 0 {
+                    declarer_tricks_won + tricks_from_this
+                } else {
+                    let ns = solve_position(
+                        &current_hands,
+                        trump,
+                        winner,
+                        &mut cutoff_cache,
+                        &mut pattern_cache,
+                    );
+                    if declarer_is_ns {
+                        declarer_tricks_won + tricks_from_this + ns
+                    } else {
+                        let remaining = current_hands.num_tricks() as u8;
+                        declarer_tricks_won + tricks_from_this + remaining.saturating_sub(ns)
+                    }
+                }
+            } else {
+                // Mid-trick - use partial trick solver
+                let (ns, remaining) = solve_mid_trick(
+                    &current_hands,
+                    trump,
+                    &partial_trick,
+                    &mut cutoff_cache,
+                    &mut pattern_cache,
+                );
+                if declarer_is_ns {
+                    declarer_tricks_won + ns
+                } else {
+                    declarer_tricks_won + remaining.saturating_sub(ns)
+                }
+            };
+
+            // Update current_dd for the next card
+            current_dd = dd_after;
+
+            // Debug output
+            if debug {
+                let card_str = format!("{}{}", card.suit.letter(), card.rank.to_char());
+                eprintln!(
+                    "  T{} pos{}: {} dd_before={} dd_after={}",
+                    trick_idx + 1,
+                    card_idx,
+                    card_str,
+                    dd_before,
+                    dd_after
+                );
+            }
+
+            // Compute cost based on who is playing
+            let player_is_declarer_side = if declarer_is_ns {
+                seat == NORTH || seat == SOUTH
+            } else {
+                seat == EAST || seat == WEST
+            };
+
+            let cost = if player_is_declarer_side {
+                // Declarer error: lost tricks (DD went down)
+                if dd_after < dd_before {
+                    dd_before - dd_after
+                } else {
+                    0
+                }
+            } else {
+                // Defender error: declarer gained tricks (DD went up)
+                if dd_after > dd_before {
+                    dd_after - dd_before
+                } else {
+                    0
+                }
+            };
+
+            card_costs.push(cost);
+            seat = (seat + 1) % 4;
+        }
+
+        all_costs.push(card_costs);
+
+        // Update state after trick
+        if cards_in_trick.len() == 4 {
+            let winner = determine_trick_winner(&cards_in_trick, trump, current_leader);
+            let declarer_won = if declarer_is_ns {
+                winner == NORTH || winner == SOUTH
+            } else {
+                winner == EAST || winner == WEST
+            };
+            if declarer_won {
+                declarer_tricks_won += 1;
+            }
+            current_leader = winner;
+        }
+    }
+
+    Ok(DdCostsResult {
+        costs: all_costs,
+        initial_dd,
+        declarer_seat,
+        declarer_is_ns,
+    })
+}
+
 /// Analyze DD errors for a single board
 ///
 /// Returns detailed DD analysis including all errors found during cardplay.
@@ -99,11 +330,7 @@ pub fn analyze_board(lin_data: &LinData, config: &DdAnalysisConfig) -> Option<Dd
         return None;
     }
 
-    let trump = parse_trump(&contract).ok()?;
     let declarer = extract_declarer(lin_data);
-    let declarer_seat = parse_declarer_seat(&declarer).ok()?;
-    let initial_leader = (declarer_seat + 1) % 4;
-    let declarer_is_ns = declarer_seat == NORTH || declarer_seat == SOUTH;
 
     // Map seat to player name (pn order is S, W, N, E)
     let seat_to_player: HashMap<usize, String> = [
@@ -117,7 +344,87 @@ pub fn analyze_board(lin_data: &LinData, config: &DdAnalysisConfig) -> Option<Dd
 
     // Convert deal to solver format
     let pbn = lin_data.deal.to_pbn(Direction::North);
+    let cardplay = lin_data.format_cardplay_by_trick();
+
+    if config.mid_trick {
+        // Mid-trick mode: use shared compute_dd_costs function
+        let dd_result = compute_dd_costs(&pbn, &cardplay, &contract, &declarer, config.debug).ok()?;
+
+        // Parse cardplay to get cards for error attribution
+        let tricks = parse_cardplay(&cardplay).ok()?;
+
+        // Convert costs to errors with player attribution
+        let mut errors = Vec::new();
+        let initial_leader = (dd_result.declarer_seat + 1) % 4;
+        let mut current_leader = initial_leader;
+
+        for (trick_idx, (trick_costs, trick_cards)) in dd_result.costs.iter().zip(tricks.iter()).enumerate() {
+            let mut seat = current_leader;
+
+            for (card_idx, (cost, card)) in trick_costs.iter().zip(trick_cards.iter()).enumerate() {
+                if *cost > 0 {
+                    // Attribute error to correct player
+                    let player_is_declarer_side = if dd_result.declarer_is_ns {
+                        seat == NORTH || seat == SOUTH
+                    } else {
+                        seat == EAST || seat == WEST
+                    };
+
+                    // For dummy's cards, attribute to declarer
+                    let error_seat = if player_is_declarer_side {
+                        dd_result.declarer_seat
+                    } else {
+                        seat
+                    };
+
+                    if let Some(player) = seat_to_player.get(&error_seat) {
+                        errors.push(DdError {
+                            player: player.clone(),
+                            trick_num: trick_idx + 1,
+                            card_position: card_idx,
+                            card: *card,
+                            cost: *cost,
+                        });
+                    }
+                }
+                seat = (seat + 1) % 4;
+            }
+
+            // Determine winner to update leader for next trick
+            if trick_cards.len() == 4 {
+                let trump = parse_trump(&contract).ok()?;
+                let cards_in_trick: Vec<(usize, usize)> = trick_cards
+                    .iter()
+                    .enumerate()
+                    .map(|(i, card)| {
+                        let s = (current_leader + i) % 4;
+                        (s, bridge_card_to_solver(*card).unwrap_or(0))
+                    })
+                    .collect();
+                current_leader = determine_trick_winner(&cards_in_trick, trump, current_leader);
+            }
+        }
+
+        let board_num = extract_board_number(&lin_data.board_header);
+
+        return Some(DdAnalysisResult {
+            board_num,
+            contract,
+            declarer,
+            initial_dd: dd_result.initial_dd,
+            final_result: dd_result.costs.len() as u8, // Approximate - could track properly
+            errors,
+        });
+    }
+
+    // Trick-boundary mode: compute DD only at start and end of each trick
+    let trump = parse_trump(&contract).ok()?;
+    let declarer_seat = parse_declarer_seat(&declarer).ok()?;
+    let initial_leader = (declarer_seat + 1) % 4;
+    let declarer_is_ns = declarer_seat == NORTH || declarer_seat == SOUTH;
+
     let mut current_hands = Hands::from_pbn(&pbn)?;
+    let tricks = parse_cardplay(&cardplay).ok()?;
 
     let mut cutoff_cache = CutoffCache::new(16);
     let mut pattern_cache = PatternCache::new(16);
@@ -136,314 +443,139 @@ pub fn analyze_board(lin_data: &LinData, config: &DdAnalysisConfig) -> Option<Dd
         13 - initial_ns
     };
 
-    // Parse cardplay into tricks
-    let cardplay = lin_data.format_cardplay_by_trick();
-    let tricks = parse_cardplay(&cardplay).ok()?;
-
     let mut errors = Vec::new();
     let mut declarer_tricks_won: u8 = 0;
     let mut current_leader = initial_leader;
 
-    if config.mid_trick {
-        // Mid-trick mode: compute DD before and after every card
-        // Key fix: dd_before for card N should equal dd_after for card N-1
-        // This ensures we only count an error when DD actually drops due to THIS card
-        for (trick_idx, trick) in tricks.iter().enumerate() {
-            let mut seat = current_leader;
-            let mut partial_trick = PartialTrick::new();
-            let mut cards_in_trick: Vec<(usize, usize)> = Vec::new();
+    for (trick_idx, trick) in tricks.iter().enumerate() {
+        if trick.len() != 4 {
+            continue; // Skip incomplete tricks
+        }
 
-            // Compute DD at start of trick (before any card is played)
-            let trick_start_dd = {
-                let ns = solve_position(
-                    &current_hands,
-                    trump,
-                    current_leader,
-                    &mut cutoff_cache,
-                    &mut pattern_cache,
-                );
-                if declarer_is_ns {
-                    declarer_tricks_won + ns
-                } else {
-                    declarer_tricks_won + (current_hands.num_tricks() as u8).saturating_sub(ns)
-                }
+        let mut seat = current_leader;
+        let mut cards_in_trick: Vec<(usize, usize)> = Vec::new();
+
+        // DD at start of trick
+        let dd_start = {
+            let ns = solve_position(
+                &current_hands,
+                trump,
+                current_leader,
+                &mut cutoff_cache,
+                &mut pattern_cache,
+            );
+            if declarer_is_ns {
+                declarer_tricks_won + ns
+            } else {
+                declarer_tricks_won + (current_hands.num_tricks() as u8).saturating_sub(ns)
+            }
+        };
+
+        // Play all cards in trick
+        for card in trick.iter() {
+            let solver_card = match bridge_card_to_solver(*card) {
+                Ok(c) => c,
+                Err(_) => continue,
+            };
+            current_hands[seat].remove(solver_card);
+            cards_in_trick.push((seat, solver_card));
+            seat = (seat + 1) % 4;
+        }
+
+        // DD at end of trick
+        let winner = determine_trick_winner(&cards_in_trick, trump, current_leader);
+        let declarer_won = if declarer_is_ns {
+            winner == NORTH || winner == SOUTH
+        } else {
+            winner == EAST || winner == WEST
+        };
+        let tricks_from_this = if declarer_won { 1u8 } else { 0u8 };
+
+        let dd_end = if current_hands.num_tricks() == 0 {
+            declarer_tricks_won + tricks_from_this
+        } else {
+            let ns = solve_position(
+                &current_hands,
+                trump,
+                winner,
+                &mut cutoff_cache,
+                &mut pattern_cache,
+            );
+            if declarer_is_ns {
+                declarer_tricks_won + tricks_from_this + ns
+            } else {
+                let remaining = current_hands.num_tricks() as u8;
+                declarer_tricks_won + tricks_from_this + remaining.saturating_sub(ns)
+            }
+        };
+
+        // Debug output for trick-boundary mode
+        if config.debug {
+            eprintln!(
+                "  T{}: dd_start={} dd_end={} diff={}",
+                trick_idx + 1,
+                dd_start,
+                dd_end,
+                dd_end as i16 - dd_start as i16
+            );
+        }
+
+        // Check for DD change
+        if dd_end < dd_start {
+            // DD dropped for declarer - attribute to declarer
+            let cost = dd_start - dd_end;
+            if let Some(player) = seat_to_player.get(&declarer_seat) {
+                errors.push(DdError {
+                    player: player.clone(),
+                    trick_num: trick_idx + 1,
+                    card_position: 0,
+                    card: trick[0],
+                    cost,
+                });
+            }
+        } else if dd_end > dd_start {
+            // DD rose for declarer - defense error
+            let cost = dd_end - dd_start;
+
+            // Attribute to the leader if they're a defender
+            let leader_is_defender = if declarer_is_ns {
+                current_leader == EAST || current_leader == WEST
+            } else {
+                current_leader == NORTH || current_leader == SOUTH
             };
 
-            // Track DD as we progress through the trick
-            // dd_before for card N = dd_after for card N-1
-            let mut current_dd = trick_start_dd;
-
-            for (card_idx, card) in trick.iter().enumerate() {
-                let solver_card = bridge_card_to_solver(*card).ok()?;
-
-                // dd_before is the DD state coming into this card
-                let dd_before = current_dd;
-
-                // Play the card
-                current_hands[seat].remove(solver_card);
-                partial_trick.add(solver_card, seat);
-                cards_in_trick.push((seat, solver_card));
-
-                // Compute DD AFTER this card is played
-                let dd_after = if card_idx == 3 {
-                    let winner = determine_trick_winner(&cards_in_trick, trump, current_leader);
-                    let declarer_won = if declarer_is_ns {
-                        winner == NORTH || winner == SOUTH
-                    } else {
-                        winner == EAST || winner == WEST
-                    };
-                    let tricks_from_this = if declarer_won { 1u8 } else { 0u8 };
-
-                    if current_hands.num_tricks() == 0 {
-                        declarer_tricks_won + tricks_from_this
-                    } else {
-                        let ns = solve_position(
-                            &current_hands,
-                            trump,
-                            winner,
-                            &mut cutoff_cache,
-                            &mut pattern_cache,
-                        );
+            let error_seat = if leader_is_defender {
+                current_leader
+            } else {
+                cards_in_trick
+                    .iter()
+                    .map(|(s, _)| *s)
+                    .find(|s| {
                         if declarer_is_ns {
-                            declarer_tricks_won + tricks_from_this + ns
+                            *s == EAST || *s == WEST
                         } else {
-                            let remaining = current_hands.num_tricks() as u8;
-                            declarer_tricks_won + tricks_from_this + remaining.saturating_sub(ns)
+                            *s == NORTH || *s == SOUTH
                         }
-                    }
-                } else {
-                    let (ns, remaining) = solve_mid_trick(
-                        &current_hands,
-                        trump,
-                        &partial_trick,
-                        &mut cutoff_cache,
-                        &mut pattern_cache,
-                    );
-                    if declarer_is_ns {
-                        declarer_tricks_won + ns
-                    } else {
-                        declarer_tricks_won + remaining.saturating_sub(ns)
-                    }
-                };
+                    })
+                    .unwrap_or(current_leader)
+            };
 
-                // Update current_dd for the next card
-                current_dd = dd_after;
-
-                // Debug output
-                if config.debug {
-                    let card_str = format!(
-                        "{}{}",
-                        card.suit.letter(),
-                        card.rank.to_char()
-                    );
-                    eprintln!(
-                        "  T{} pos{}: {} dd_before={} dd_after={}",
-                        trick_idx + 1,
-                        card_idx,
-                        card_str,
-                        dd_before,
-                        dd_after
-                    );
-                }
-
-                // Check for DD change
-                let player_is_declarer_side = if declarer_is_ns {
-                    seat == NORTH || seat == SOUTH
-                } else {
-                    seat == EAST || seat == WEST
-                };
-
-                let cost = if player_is_declarer_side {
-                    if dd_after < dd_before {
-                        dd_before - dd_after
-                    } else {
-                        0
-                    }
-                } else {
-                    // For defenders, DD going up means they made an error
-                    if dd_after > dd_before {
-                        dd_after - dd_before
-                    } else {
-                        0
-                    }
-                };
-
-                if cost > 0 {
-                    // Attribute error to correct player
-                    // For dummy's cards, attribute to declarer
-                    let error_seat = if player_is_declarer_side {
-                        declarer_seat // Declarer controls both hands
-                    } else {
-                        seat
-                    };
-
-                    if let Some(player) = seat_to_player.get(&error_seat) {
-                        errors.push(DdError {
-                            player: player.clone(),
-                            trick_num: trick_idx + 1,
-                            card_position: card_idx,
-                            card: *card,
-                            cost,
-                        });
-                    }
-                }
-
-                seat = (seat + 1) % 4;
-            }
-
-            // Update state after trick
-            if cards_in_trick.len() == 4 {
-                let winner = determine_trick_winner(&cards_in_trick, trump, current_leader);
-                let declarer_won = if declarer_is_ns {
-                    winner == NORTH || winner == SOUTH
-                } else {
-                    winner == EAST || winner == WEST
-                };
-                if declarer_won {
-                    declarer_tricks_won += 1;
-                }
-                current_leader = winner;
+            if let Some(player) = seat_to_player.get(&error_seat) {
+                errors.push(DdError {
+                    player: player.clone(),
+                    trick_num: trick_idx + 1,
+                    card_position: 0,
+                    card: trick[0],
+                    cost,
+                });
             }
         }
-    } else {
-        // Trick-boundary mode: compute DD only at start and end of each trick
-        for (trick_idx, trick) in tricks.iter().enumerate() {
-            if trick.len() != 4 {
-                continue; // Skip incomplete tricks
-            }
 
-            let mut seat = current_leader;
-            let mut cards_in_trick: Vec<(usize, usize)> = Vec::new();
-
-            // DD at start of trick
-            let dd_start = {
-                let ns = solve_position(
-                    &current_hands,
-                    trump,
-                    current_leader,
-                    &mut cutoff_cache,
-                    &mut pattern_cache,
-                );
-                if declarer_is_ns {
-                    declarer_tricks_won + ns
-                } else {
-                    declarer_tricks_won + (current_hands.num_tricks() as u8).saturating_sub(ns)
-                }
-            };
-
-            // Track which cards were played in this trick
-            let mut trick_cards: Vec<(usize, Card)> = Vec::new();
-
-            // Play all cards in trick
-            for (card_idx, card) in trick.iter().enumerate() {
-                let solver_card = match bridge_card_to_solver(*card) {
-                    Ok(c) => c,
-                    Err(_) => continue,
-                };
-                current_hands[seat].remove(solver_card);
-                cards_in_trick.push((seat, solver_card));
-                trick_cards.push((card_idx, *card));
-                seat = (seat + 1) % 4;
-            }
-
-            // DD at end of trick
-            let winner = determine_trick_winner(&cards_in_trick, trump, current_leader);
-            let declarer_won = if declarer_is_ns {
-                winner == NORTH || winner == SOUTH
-            } else {
-                winner == EAST || winner == WEST
-            };
-            let tricks_from_this = if declarer_won { 1u8 } else { 0u8 };
-
-            let dd_end = if current_hands.num_tricks() == 0 {
-                declarer_tricks_won + tricks_from_this
-            } else {
-                let ns = solve_position(
-                    &current_hands,
-                    trump,
-                    winner,
-                    &mut cutoff_cache,
-                    &mut pattern_cache,
-                );
-                if declarer_is_ns {
-                    declarer_tricks_won + tricks_from_this + ns
-                } else {
-                    let remaining = current_hands.num_tricks() as u8;
-                    declarer_tricks_won + tricks_from_this + remaining.saturating_sub(ns)
-                }
-            };
-
-            // Debug output for trick-boundary mode
-            if config.debug {
-                eprintln!(
-                    "  T{}: dd_start={} dd_end={} diff={}",
-                    trick_idx + 1,
-                    dd_start,
-                    dd_end,
-                    dd_end as i16 - dd_start as i16
-                );
-            }
-
-            // Check for DD change
-            if dd_end < dd_start {
-                // DD dropped for declarer - attribute to declarer
-                let cost = dd_start - dd_end;
-                if let Some(player) = seat_to_player.get(&declarer_seat) {
-                    // For trick-boundary, we don't know exactly which card caused it
-                    // Use the first card position (lead) as a marker
-                    errors.push(DdError {
-                        player: player.clone(),
-                        trick_num: trick_idx + 1,
-                        card_position: 0, // Unknown within trick
-                        card: trick[0],
-                        cost,
-                    });
-                }
-            } else if dd_end > dd_start {
-                // DD rose for declarer - defense error
-                let cost = dd_end - dd_start;
-
-                // Attribute to the leader if they're a defender
-                let leader_is_defender = if declarer_is_ns {
-                    current_leader == EAST || current_leader == WEST
-                } else {
-                    current_leader == NORTH || current_leader == SOUTH
-                };
-
-                let error_seat = if leader_is_defender {
-                    current_leader
-                } else {
-                    // Find first defender who played
-                    cards_in_trick
-                        .iter()
-                        .map(|(s, _)| *s)
-                        .find(|s| {
-                            if declarer_is_ns {
-                                *s == EAST || *s == WEST
-                            } else {
-                                *s == NORTH || *s == SOUTH
-                            }
-                        })
-                        .unwrap_or(current_leader)
-                };
-
-                if let Some(player) = seat_to_player.get(&error_seat) {
-                    errors.push(DdError {
-                        player: player.clone(),
-                        trick_num: trick_idx + 1,
-                        card_position: 0,
-                        card: trick[0],
-                        cost,
-                    });
-                }
-            }
-
-            // Update state
-            if declarer_won {
-                declarer_tricks_won += 1;
-            }
-            current_leader = winner;
+        // Update state
+        if declarer_won {
+            declarer_tricks_won += 1;
         }
+        current_leader = winner;
     }
 
     let board_num = extract_board_number(&lin_data.board_header);

@@ -5,11 +5,16 @@
 //! double-dummy analysis.
 
 use anyhow::{Context, Result};
+use bridge_parsers::dd_analysis::compute_dd_costs;
 use bridge_parsers::lin::parse_lin_from_url;
 use bridge_parsers::tinyurl::UrlResolver;
+use bridge_solver::{NORTH, EAST, SOUTH, WEST, SPADE, HEART, DIAMOND, CLUB};
+// Card, Rank, Suit only used in #[cfg(test)] functions
+#[cfg(test)]
 use bridge_parsers::model::{Card, Rank, Suit};
-use bridge_solver::{Hands, Solver, PartialTrick, CutoffCache, PatternCache};
-use bridge_solver::{NORTH, EAST, SOUTH, WEST, NOTRUMP, SPADE, HEART, DIAMOND, CLUB};
+#[cfg(test)]
+use bridge_solver::NOTRUMP;
+#[cfg(test)]
 use bridge_solver::cards::card_of;
 use clap::{Parser, Subcommand};
 use csv::{Reader, ReaderBuilder, Writer, StringRecord};
@@ -516,6 +521,26 @@ struct DdWorkItem {
     cardplay: String,
     contract: String,
     declarer: String,
+    max_dd: Option<i8>, // From input file, -1 means incomplete hand
+}
+
+/// Result stored for each processed row
+struct DdResultEntry {
+    analysis: String,
+    computed_dd: Option<u8>,
+    input_max_dd: Option<i8>,
+    /// Opening lead error (1 if cost a trick, 0 otherwise)
+    ol_error: u8,
+    /// Per-seat play counts (N, S, E, W)
+    plays_n: u8,
+    plays_s: u8,
+    plays_e: u8,
+    plays_w: u8,
+    /// Per-seat error counts (N, S, E, W)
+    errors_n: u8,
+    errors_s: u8,
+    errors_e: u8,
+    errors_w: u8,
 }
 
 fn analyze_dd(
@@ -543,7 +568,7 @@ fn analyze_dd(
     // Find required columns
     let col_indices = find_required_columns(&headers)?;
 
-    // Check if DD_Analysis column already exists
+    // Check if DD columns already exist
     let dd_col_exists = headers.iter().any(|h| h == "DD_Analysis");
 
     // Load existing results if resuming
@@ -553,15 +578,28 @@ fn analyze_dd(
         HashSet::new()
     };
 
-    // Prepare output headers
+    // Prepare output headers - add all DD columns if they don't exist
     let mut output_headers = headers.clone();
     if !dd_col_exists {
+        output_headers.push_field("Contract_DD");
+        output_headers.push_field("DD_Match");
+        output_headers.push_field("DD_OL_Error");
+        output_headers.push_field("DD_N_Plays");
+        output_headers.push_field("DD_S_Plays");
+        output_headers.push_field("DD_E_Plays");
+        output_headers.push_field("DD_W_Plays");
+        output_headers.push_field("DD_N_Errors");
+        output_headers.push_field("DD_S_Errors");
+        output_headers.push_field("DD_E_Errors");
+        output_headers.push_field("DD_W_Errors");
         output_headers.push_field("DD_Analysis");
     }
 
     // Collect all rows and prepare work items
     let mut all_records: Vec<StringRecord> = Vec::new();
     let mut work_items: Vec<DdWorkItem> = Vec::new();
+    let mut skipped_incomplete = 0usize;
+    let mut skipped_passout = 0usize;
 
     for (row_idx, result) in reader.records().enumerate() {
         let record = result.context("Failed to read CSV row")?;
@@ -574,6 +612,17 @@ fn analyze_dd(
             continue;
         }
 
+        // Get Max DD from input (if column exists)
+        let max_dd: Option<i8> = col_indices.max_dd_col
+            .and_then(|col| record.get(col))
+            .and_then(|s| s.parse::<i8>().ok());
+
+        // Skip incomplete hands (Max DD = -1)
+        if max_dd == Some(-1) {
+            skipped_incomplete += 1;
+            continue;
+        }
+
         // Get the cardplay
         let cardplay = record.get(col_indices.cardplay_col).unwrap_or("").to_string();
 
@@ -583,6 +632,13 @@ fn analyze_dd(
 
         // Extract deal, contract, and declarer from row
         if let Some(row_data) = extract_row_data(&record, &col_indices) {
+            // Skip passout hands (contract starts with "0" or is "P" or "Pass")
+            let contract_upper = row_data.contract.to_uppercase();
+            if contract_upper.starts_with("0") || contract_upper == "P" || contract_upper == "PASS" {
+                skipped_passout += 1;
+                continue;
+            }
+
             work_items.push(DdWorkItem {
                 row_idx,
                 ref_id,
@@ -590,6 +646,7 @@ fn analyze_dd(
                 cardplay,
                 contract: row_data.contract,
                 declarer: row_data.declarer,
+                max_dd,
             });
         }
     }
@@ -598,10 +655,12 @@ fn analyze_dd(
     let to_process = work_items.len();
 
     eprintln!(
-        "Found {} rows, {} need DD analysis ({} already done)",
+        "Found {} rows, {} need DD analysis ({} already done, {} incomplete, {} passout)",
         total_rows,
         to_process,
-        total_rows - to_process
+        total_rows - to_process - skipped_incomplete - skipped_passout,
+        skipped_incomplete,
+        skipped_passout
     );
 
     if to_process == 0 {
@@ -613,22 +672,42 @@ fn analyze_dd(
     let processed_count = AtomicUsize::new(0);
     let error_count = AtomicUsize::new(0);
 
-    // Store results in a thread-safe map
-    let results: Mutex<HashMap<usize, String>> = Mutex::new(HashMap::new());
+    // Store results in a thread-safe map (includes computed DD for validation)
+    let results: Mutex<HashMap<usize, DdResultEntry>> = Mutex::new(HashMap::new());
 
     // Process work items in parallel
     work_items.par_iter().for_each(|item| {
-        let dd_analysis = match compute_dd_analysis(item) {
-            Ok(analysis) => analysis,
+        let entry = match compute_dd_analysis(item) {
+            Ok(output) => DdResultEntry {
+                analysis: output.analysis,
+                computed_dd: Some(output.initial_dd),
+                input_max_dd: item.max_dd,
+                ol_error: output.ol_error,
+                plays_n: output.plays_n,
+                plays_s: output.plays_s,
+                plays_e: output.plays_e,
+                plays_w: output.plays_w,
+                errors_n: output.errors_n,
+                errors_s: output.errors_s,
+                errors_e: output.errors_e,
+                errors_w: output.errors_w,
+            },
             Err(e) => {
                 error_count.fetch_add(1, Ordering::Relaxed);
                 log::warn!("Row {}: DD analysis error: {}", item.row_idx + 1, e);
-                format!("ERROR: {}", e)
+                DdResultEntry {
+                    analysis: format!("ERROR: {}", e),
+                    computed_dd: None,
+                    input_max_dd: item.max_dd,
+                    ol_error: 0,
+                    plays_n: 0, plays_s: 0, plays_e: 0, plays_w: 0,
+                    errors_n: 0, errors_s: 0, errors_e: 0, errors_w: 0,
+                }
             }
         };
 
-        // Store result
-        results.lock().unwrap().insert(item.row_idx, dd_analysis);
+        // Store result with validation info
+        results.lock().unwrap().insert(item.row_idx, entry);
 
         // Update progress
         let count = processed_count.fetch_add(1, Ordering::Relaxed) + 1;
@@ -644,17 +723,60 @@ fn analyze_dd(
 
     eprintln!(); // New line after progress
 
-    // Write output
+    // Write output and collect validation statistics
     let results_map = results.into_inner().unwrap();
     let mut writer = Writer::from_path(output).context("Failed to create output CSV")?;
     writer.write_record(&output_headers)?;
+
+    let mut dd_matches = 0usize;
+    let mut dd_mismatches: Vec<(usize, u8, i8)> = Vec::new(); // (row, computed, input)
 
     for (row_idx, record) in all_records.iter().enumerate() {
         let mut output_record = record.clone();
 
         if !dd_col_exists {
-            let dd_analysis = results_map.get(&row_idx).cloned().unwrap_or_default();
-            output_record.push_field(&dd_analysis);
+            // Add all DD columns
+            if let Some(entry) = results_map.get(&row_idx) {
+                output_record.push_field(&entry.computed_dd.map(|d| d.to_string()).unwrap_or_default());
+                // DD_Match: true if computed DD matches input Max DD (or empty if no Max DD)
+                let dd_match = match (entry.computed_dd, entry.input_max_dd) {
+                    (Some(computed), Some(input)) if input >= 0 => {
+                        if computed as i8 == input { "true" } else { "false" }
+                    }
+                    _ => "", // No comparison possible (missing data or incomplete hand)
+                };
+                output_record.push_field(dd_match);
+                output_record.push_field(&entry.ol_error.to_string());
+                output_record.push_field(&entry.plays_n.to_string());
+                output_record.push_field(&entry.plays_s.to_string());
+                output_record.push_field(&entry.plays_e.to_string());
+                output_record.push_field(&entry.plays_w.to_string());
+                output_record.push_field(&entry.errors_n.to_string());
+                output_record.push_field(&entry.errors_s.to_string());
+                output_record.push_field(&entry.errors_e.to_string());
+                output_record.push_field(&entry.errors_w.to_string());
+                output_record.push_field(&entry.analysis);
+            } else {
+                // Empty values for rows we didn't process (12 columns now)
+                for _ in 0..12 {
+                    output_record.push_field("");
+                }
+            }
+        }
+
+        // Check DD validation (only for rows we processed with valid Max DD)
+        if let Some(entry) = results_map.get(&row_idx) {
+            if let (Some(computed), Some(input_dd)) = (entry.computed_dd, entry.input_max_dd) {
+                // Skip -1 values in validation (incomplete hands)
+                if input_dd >= 0 {
+                    if computed as i8 == input_dd {
+                        dd_matches += 1;
+                    } else {
+                        // row_idx + 2: +1 for 0-to-1 indexing, +1 for header row
+                        dd_mismatches.push((row_idx + 2, computed, input_dd));
+                    }
+                }
+            }
         }
 
         writer.write_record(&output_record)?;
@@ -673,6 +795,25 @@ fn analyze_dd(
         to_process, errors
     );
 
+    // Report DD validation statistics
+    if dd_matches > 0 || !dd_mismatches.is_empty() {
+        eprintln!();
+        eprintln!("=== DD Validation (Initial DD vs Max DD) ===");
+        eprintln!("Matches: {}", dd_matches);
+        eprintln!("Mismatches: {}", dd_mismatches.len());
+
+        if !dd_mismatches.is_empty() {
+            eprintln!();
+            eprintln!("Mismatch details (row, computed, input):");
+            for (row, computed, input) in dd_mismatches.iter().take(20) {
+                eprintln!("  Row {}: computed={}, input={}", row, computed, input);
+            }
+            if dd_mismatches.len() > 20 {
+                eprintln!("  ... and {} more", dd_mismatches.len() - 20);
+            }
+        }
+    }
+
     Ok(())
 }
 
@@ -683,6 +824,7 @@ struct ColumnIndices {
     contract_col: Option<usize>,
     declarer_col: Option<usize>,
     lin_url_col: Option<usize>,
+    max_dd_col: Option<usize>,
     // Hand columns (actual PBN-style hand data, not player names)
     north_col: Option<usize>,
     south_col: Option<usize>,
@@ -719,6 +861,7 @@ fn find_required_columns(headers: &StringRecord) -> Result<ColumnIndices> {
         contract_col,
         declarer_col,
         lin_url_col,
+        max_dd_col: find_optional("Max DD"),
         // Look for hand columns (might be PBN-style hands or player names)
         north_col: find_optional("North").or_else(|| find_optional("N_Hand")),
         south_col: find_optional("South").or_else(|| find_optional("S_Hand")),
@@ -948,193 +1091,236 @@ fn extract_declarer_from_auction(lin_data: &bridge_parsers::lin::LinData) -> Str
     }
 }
 
+/// Result from DD analysis including validation info
+struct DdAnalysisOutput {
+    analysis: String,
+    initial_dd: u8,
+    /// Opening lead error (1 if cost a trick, 0 otherwise)
+    ol_error: u8,
+    /// Per-seat play counts (N, S, E, W)
+    plays_n: u8,
+    plays_s: u8,
+    plays_e: u8,
+    plays_w: u8,
+    /// Per-seat error counts (N, S, E, W)
+    errors_n: u8,
+    errors_s: u8,
+    errors_e: u8,
+    errors_w: u8,
+}
+
 /// Compute DD analysis for a single work item
 ///
 /// For each card played, computes the DD cost of the actual play vs optimal.
 /// DD cost represents tricks lost by suboptimal play (0 = optimal or equivalent).
 /// Output format: T1:c1,c2,c3,c4|T2:c1,c2,c3,c4|... where each c is the cost for that card
-fn compute_dd_analysis(item: &DdWorkItem) -> Result<String> {
-    // Parse the deal
-    let hands = Hands::from_pbn(&item.deal_pbn)
-        .ok_or_else(|| anyhow::anyhow!("Failed to parse deal: {}", item.deal_pbn))?;
+fn compute_dd_analysis(item: &DdWorkItem) -> Result<DdAnalysisOutput> {
+    // Use the shared library function for DD computation
+    let result = compute_dd_costs(
+        &item.deal_pbn,
+        &item.cardplay,
+        &item.contract,
+        &item.declarer,
+        false, // no debug output
+    ).map_err(|e| anyhow::anyhow!("{}", e))?;
 
-    // Parse the contract to get trump suit
-    let trump = parse_trump(&item.contract)?;
-
-    // Parse declarer to get leader
-    let declarer_seat = parse_declarer(&item.declarer)?;
-    let initial_leader = (declarer_seat + 1) % 4; // Left of declarer leads
-
-    // Determine if declarer is N-S or E-W
-    // N=1, S=3 -> odd seats = N-S partnership
-    // W=0, E=2 -> even seats = E-W partnership
-    let declarer_is_ns = declarer_seat == NORTH || declarer_seat == SOUTH;
-
-    // Parse cardplay into tricks
-    let tricks = parse_cardplay(&item.cardplay)?;
-
-    if tricks.is_empty() {
-        return Ok(String::new());
+    if result.costs.is_empty() {
+        return Ok(DdAnalysisOutput {
+            analysis: String::new(),
+            initial_dd: result.initial_dd,
+            ol_error: 0,
+            plays_n: 0, plays_s: 0, plays_e: 0, plays_w: 0,
+            errors_n: 0, errors_s: 0, errors_e: 0, errors_w: 0,
+        });
     }
 
-    // Analyze card-by-card
-    let mut trick_results: Vec<String> = Vec::new();
-    let mut current_hands = hands;
+    // Track per-seat plays and errors
+    let mut plays = [0u8; 4];  // indexed by seat constant (NORTH, EAST, SOUTH, WEST)
+    let mut errors = [0u8; 4];
+
+    // Opening lead error: check if the first card of trick 1 cost a trick
+    let ol_error = if !result.costs.is_empty() && !result.costs[0].is_empty() {
+        if result.costs[0][0] > 0 { 1 } else { 0 }
+    } else {
+        0
+    };
+
+    // Parse cardplay to track trick winners
+    let tricks: Vec<Vec<&str>> = item.cardplay
+        .split('|')
+        .filter(|s| !s.is_empty())
+        .map(|t| t.split_whitespace().collect())
+        .collect();
+
+    // Initial leader is left of declarer
+    let initial_leader = (result.declarer_seat + 1) % 4;
     let mut current_leader = initial_leader;
 
-    // Caches for solver (reused across all solves for this hand)
-    let mut cutoff_cache = CutoffCache::new(16);
-    let mut pattern_cache = PatternCache::new(16);
-
-    for (trick_num, trick) in tricks.iter().enumerate() {
-        let mut card_costs: Vec<u8> = Vec::new();
-        let mut cards_in_trick: Vec<(usize, usize)> = Vec::new(); // (seat, card)
-        let mut partial_trick = PartialTrick::new();
+    for (trick_idx, card_costs) in result.costs.iter().enumerate() {
         let mut seat = current_leader;
 
-        for (card_idx, card) in trick.iter().enumerate() {
-            let cards_remaining = current_hands.num_tricks() as u8;
-
-            // DD before this card is played (accounting for partial trick state)
-            let ns_before = if card_idx == 0 {
-                // Start of trick - normal solve
-                solve_position_with_caches(&current_hands, trump, current_leader, &mut cutoff_cache, &mut pattern_cache)
-            } else {
-                // Mid-trick - use partial trick solver
-                solve_mid_trick_position(&current_hands, trump, current_leader, &partial_trick, &mut cutoff_cache, &mut pattern_cache)
-            };
-            let declarer_before = if declarer_is_ns {
-                ns_before
-            } else {
-                cards_remaining.saturating_sub(ns_before)
-            };
-
-            // Convert and remove the card
-            let solver_card = bridge_card_to_solver(*card)?;
-            cards_in_trick.push((seat, solver_card));
-            current_hands[seat].remove(solver_card);
-
-            // Add to partial trick for mid-trick solving
-            partial_trick.add(solver_card, seat);
-
-            // DD after this card is played
-            let declarer_after = if card_idx == 3 && cards_in_trick.len() == 4 {
-                // Trick complete - find winner
-                let winner = determine_trick_winner(&cards_in_trick, trump, current_leader);
-                let declarer_won = if declarer_is_ns {
-                    winner == NORTH || winner == SOUTH
-                } else {
-                    winner == EAST || winner == WEST
-                };
-
-                if current_hands.num_tricks() == 0 {
-                    // Last trick
-                    if declarer_won { 1 } else { 0 }
-                } else {
-                    let ns_after = solve_position_with_caches(&current_hands, trump, winner, &mut cutoff_cache, &mut pattern_cache);
-                    let remaining = current_hands.num_tricks() as u8;
-                    if declarer_is_ns {
-                        ns_after + if declarer_won { 1 } else { 0 }
-                    } else {
-                        remaining.saturating_sub(ns_after) + if declarer_won { 1 } else { 0 }
-                    }
-                }
-            } else {
-                // Partial trick - solve with partial trick state
-                let ns_after = solve_mid_trick_position(&current_hands, trump, current_leader, &partial_trick, &mut cutoff_cache, &mut pattern_cache);
-                let remaining = current_hands.num_tricks() as u8;
-                if declarer_is_ns {
-                    ns_after
-                } else {
-                    remaining.saturating_sub(ns_after)
-                }
-            };
-
-            // Cost depends on who is playing:
-            // - Declarer/dummy: cost if declarer's position got worse (declarer_before > declarer_after)
-            // - Defender: cost if declarer's position got better (declarer_after > declarer_before)
-            let is_declarer_side = if declarer_is_ns {
-                seat == NORTH || seat == SOUTH
-            } else {
-                seat == EAST || seat == WEST
-            };
-
-            let cost = if is_declarer_side {
-                // Declarer error: lost tricks
-                declarer_before.saturating_sub(declarer_after)
-            } else {
-                // Defender error: declarer gained tricks
-                declarer_after.saturating_sub(declarer_before)
-            };
-            card_costs.push(cost);
-
+        for &cost in card_costs.iter() {
+            plays[seat] += 1;
+            if cost > 0 {
+                errors[seat] += 1;
+            }
             seat = (seat + 1) % 4;
         }
 
-        // Format: T1:c1,c2,c3,c4
-        let costs_str = card_costs.iter().map(|c| c.to_string()).collect::<Vec<_>>().join(",");
-        trick_results.push(format!("T{}:{}", trick_num + 1, costs_str));
-
-        // Update leader for next trick
-        if cards_in_trick.len() == 4 {
-            let winner = determine_trick_winner(&cards_in_trick, trump, current_leader);
-            current_leader = winner;
+        // Determine trick winner for next trick's leader
+        // We need to parse the cards to determine the winner
+        if trick_idx < tricks.len() && tricks[trick_idx].len() == 4 {
+            // For simplicity, we'll track winners using the cardplay
+            // Parse trump from contract
+            let trump = parse_trump_for_winner(&item.contract);
+            if let Some(winner) = determine_trick_winner_from_cards(
+                &tricks[trick_idx],
+                trump,
+                current_leader,
+            ) {
+                current_leader = winner;
+            }
+            // If we can't determine the winner, keep current_leader unchanged
         }
     }
 
-    Ok(trick_results.join("|"))
+    // Format the costs as T1:c1,c2,c3,c4|T2:c1,c2,c3,c4|...
+    let trick_results: Vec<String> = result
+        .costs
+        .iter()
+        .enumerate()
+        .map(|(trick_num, card_costs)| {
+            let costs_str = card_costs
+                .iter()
+                .map(|c| c.to_string())
+                .collect::<Vec<_>>()
+                .join(",");
+            format!("T{}:{}", trick_num + 1, costs_str)
+        })
+        .collect();
+
+    Ok(DdAnalysisOutput {
+        analysis: trick_results.join("|"),
+        initial_dd: result.initial_dd,
+        ol_error,
+        plays_n: plays[NORTH],
+        plays_s: plays[SOUTH],
+        plays_e: plays[EAST],
+        plays_w: plays[WEST],
+        errors_n: errors[NORTH],
+        errors_s: errors[SOUTH],
+        errors_e: errors[EAST],
+        errors_w: errors[WEST],
+    })
 }
 
-/// Solve a position and return NS tricks (with caches)
-fn solve_position_with_caches(
-    hands: &Hands,
-    trump: usize,
+/// Parse trump suit from contract for trick winner determination
+fn parse_trump_for_winner(contract: &str) -> Option<usize> {
+    let contract = contract.trim().to_uppercase();
+    if contract.contains("NT") {
+        return None; // No trump
+    }
+    for c in contract.chars() {
+        match c {
+            'S' => return Some(SPADE),
+            'H' => return Some(HEART),
+            'D' => return Some(DIAMOND),
+            'C' => return Some(CLUB),
+            _ => continue,
+        }
+    }
+    None
+}
+
+/// Determine trick winner from card strings
+fn determine_trick_winner_from_cards(
+    cards: &[&str],
+    trump: Option<usize>,
     leader: usize,
-    cutoff_cache: &mut CutoffCache,
-    pattern_cache: &mut PatternCache,
-) -> u8 {
-    if hands.num_tricks() == 0 {
-        return 0;
+) -> Option<usize> {
+    if cards.len() != 4 {
+        return None;
     }
 
-    let solver = Solver::new(*hands, trump, leader);
-    solver.solve_with_caches(cutoff_cache, pattern_cache)
-}
+    // Parse cards to (suit, rank) where higher rank = better
+    let parsed: Vec<Option<(usize, u8)>> = cards
+        .iter()
+        .map(|s| {
+            if s.len() < 2 {
+                return None;
+            }
+            let suit = match s.chars().next()? {
+                'S' | 's' => SPADE,
+                'H' | 'h' => HEART,
+                'D' | 'd' => DIAMOND,
+                'C' | 'c' => CLUB,
+                _ => return None,
+            };
+            let rank_char = s.chars().nth(1)?;
+            let rank = match rank_char {
+                'A' | 'a' => 14,
+                'K' | 'k' => 13,
+                'Q' | 'q' => 12,
+                'J' | 'j' => 11,
+                'T' | 't' | '1' => 10,
+                '9' => 9, '8' => 8, '7' => 7, '6' => 6,
+                '5' => 5, '4' => 4, '3' => 3, '2' => 2,
+                _ => return None,
+            };
+            Some((suit, rank))
+        })
+        .collect();
 
-/// Solve a mid-trick position and return NS tricks
-fn solve_mid_trick_position(
-    hands: &Hands,
-    trump: usize,
-    _leader: usize,  // Unused - leader is derived from partial_trick
-    partial_trick: &PartialTrick,
-    cutoff_cache: &mut CutoffCache,
-    pattern_cache: &mut PatternCache,
-) -> u8 {
-    // Use new_mid_trick to correctly handle mid-trick positions
-    // It computes num_tricks from max hand size (not fixed seat) and
-    // derives leader from the partial_trick
-    if let Some(solver) = Solver::new_mid_trick(*hands, trump, partial_trick) {
-        solver.solve_mid_trick(cutoff_cache, pattern_cache, partial_trick)
-    } else if let Some(leader) = partial_trick.leader() {
-        // Fallback: use regular solve if new_mid_trick fails
-        let solver = Solver::new(*hands, trump, leader);
-        solver.solve_with_caches(cutoff_cache, pattern_cache)
-    } else {
-        0
+    // All cards must parse
+    let cards_parsed: Vec<(usize, u8)> = parsed.into_iter().collect::<Option<Vec<_>>>()?;
+
+    let led_suit = cards_parsed[0].0;
+    let mut winner_idx = 0;
+    let mut winner_card = cards_parsed[0];
+
+    for (i, &(suit, rank)) in cards_parsed.iter().enumerate().skip(1) {
+        let dominated = if let Some(trump_suit) = trump {
+            if suit == trump_suit && winner_card.0 != trump_suit {
+                // This card is trump, winner is not
+                true
+            } else if suit == trump_suit && winner_card.0 == trump_suit {
+                // Both trump, higher wins
+                rank > winner_card.1
+            } else if winner_card.0 == trump_suit {
+                // Winner is trump, this is not
+                false
+            } else if suit == led_suit && winner_card.0 == led_suit {
+                // Both follow suit, higher wins
+                rank > winner_card.1
+            } else if suit == led_suit {
+                // This follows suit, winner doesn't
+                true
+            } else {
+                // Neither trump nor following suit
+                false
+            }
+        } else {
+            // No trump
+            if suit == led_suit && winner_card.0 == led_suit {
+                rank > winner_card.1
+            } else if suit == led_suit {
+                true
+            } else {
+                false
+            }
+        };
+
+        if dominated {
+            winner_idx = i;
+            winner_card = (suit, rank);
+        }
     }
+
+    Some((leader + winner_idx) % 4)
 }
 
-/// Solve a position and return NS tricks (simple version without caches)
-fn solve_position(hands: &Hands, trump: usize, leader: usize) -> u8 {
-    if hands.num_tricks() == 0 {
-        return 0;
-    }
-
-    let solver = Solver::new(*hands, trump, leader);
-    solver.solve()
-}
-
-/// Parse trump suit from contract string (e.g., "4S", "3NT", "6H")
+// Functions below are used by tests only
+#[cfg(test)]
 fn parse_trump(contract: &str) -> Result<usize> {
     let contract = contract.trim().to_uppercase();
 
@@ -1156,7 +1342,7 @@ fn parse_trump(contract: &str) -> Result<usize> {
     Err(anyhow::anyhow!("Could not parse trump from contract: {}", contract))
 }
 
-/// Parse declarer from direction string
+#[cfg(test)]
 fn parse_declarer(declarer: &str) -> Result<usize> {
     match declarer.trim().to_uppercase().chars().next() {
         Some('N') => Ok(NORTH),
@@ -1167,8 +1353,7 @@ fn parse_declarer(declarer: &str) -> Result<usize> {
     }
 }
 
-/// Parse cardplay string into tricks
-/// Format: "D2-DA-D6-D5|S3-S2-SQ-SA|..."
+#[cfg(test)]
 fn parse_cardplay(cardplay: &str) -> Result<Vec<Vec<Card>>> {
     let mut tricks = Vec::new();
 
@@ -1191,7 +1376,7 @@ fn parse_cardplay(cardplay: &str) -> Result<Vec<Vec<Card>>> {
     Ok(tricks)
 }
 
-/// Parse a card string like "SA", "D2", "HK"
+#[cfg(test)]
 fn parse_card_str(s: &str) -> Result<Card> {
     let s = s.trim();
     if s.len() < 2 {
@@ -1216,7 +1401,7 @@ fn parse_card_str(s: &str) -> Result<Card> {
     Ok(Card::new(suit, rank))
 }
 
-/// Convert bridge-parsers Card to bridge-solver card index
+#[cfg(test)]
 fn bridge_card_to_solver(card: Card) -> Result<usize> {
     let suit = match card.suit {
         Suit::Spades => SPADE,
@@ -1244,7 +1429,7 @@ fn bridge_card_to_solver(card: Card) -> Result<usize> {
     Ok(card_of(suit, rank))
 }
 
-/// Determine winner of a trick
+#[cfg(test)]
 fn determine_trick_winner(
     cards: &[(usize, usize)], // (seat, card)
     trump: usize,
@@ -1960,15 +2145,15 @@ fn determine_trick_winner_for_display(cards: &[&str], leader: char, contract: &s
 #[derive(Default, Clone)]
 struct PlayerStats {
     name: String,
+    // Total deals where this player participated (including as dummy)
+    total_deals: u64,
     // Declaring stats
     declaring_plays: u64,
     declaring_errors: u64,
-    declaring_total_cost: u64,
     declaring_deals: u64,
     // Defending stats
     defending_plays: u64,
     defending_errors: u64,
-    defending_total_cost: u64,
     defending_deals: u64,
 }
 
@@ -1996,37 +2181,18 @@ impl PlayerStats {
         }
     }
 
-    fn declaring_avg_cost(&self) -> f64 {
-        if self.declaring_plays == 0 {
-            0.0
-        } else {
-            self.declaring_total_cost as f64 / self.declaring_plays as f64
-        }
-    }
-
-    fn defending_avg_cost(&self) -> f64 {
-        if self.defending_plays == 0 {
-            0.0
-        } else {
-            self.defending_total_cost as f64 / self.defending_plays as f64
-        }
-    }
-
     fn total_deals(&self) -> u64 {
-        // A player is in every deal as either declarer/dummy or defender
-        // But we track deals separately, so take max to avoid double counting
-        self.declaring_deals + self.defending_deals
+        self.total_deals
     }
 
     /// Merge another player's stats into this one (for "Field" aggregation)
     fn merge(&mut self, other: &PlayerStats) {
+        self.total_deals += other.total_deals;
         self.declaring_plays += other.declaring_plays;
         self.declaring_errors += other.declaring_errors;
-        self.declaring_total_cost += other.declaring_total_cost;
         self.declaring_deals += other.declaring_deals;
         self.defending_plays += other.defending_plays;
         self.defending_errors += other.defending_errors;
-        self.defending_total_cost += other.defending_total_cost;
         self.defending_deals += other.defending_deals;
     }
 
@@ -2087,9 +2253,10 @@ fn z_test_diff_vs_baseline(subject: &PlayerStats, baseline: &PlayerStats) -> (f6
     // Z-score: how many SEs is subject's diff below baseline's diff?
     let z = (diff_subj - diff_base) / se_combined;
 
-    // One-tailed p-value (testing if subject's diff is significantly LOWER)
-    // Using standard normal approximation
-    let p = 0.5 * (1.0 + erf(-z / std::f64::consts::SQRT_2));
+    // One-tailed p-value (testing if subject's diff is significantly LOWER than baseline)
+    // P(Z <= z) where z is negative when subject has smaller gap than baseline
+    // This gives the probability of seeing a gap this small or smaller by chance
+    let p = 0.5 * (1.0 + erf(z / std::f64::consts::SQRT_2));
 
     (z, p)
 }
@@ -2130,8 +2297,24 @@ fn compute_stats(input: &PathBuf, top_n: usize, output: Option<&PathBuf>) -> Res
         .ok_or_else(|| anyhow::anyhow!("Column 'W' not found"))?;
     let dec_col = headers.iter().position(|h| h == "Dec")
         .ok_or_else(|| anyhow::anyhow!("Column 'Dec' not found"))?;
-    let dd_col = headers.iter().position(|h| h == "DD_Analysis")
-        .ok_or_else(|| anyhow::anyhow!("Column 'DD_Analysis' not found - run analyze-dd first"))?;
+
+    // Find the new per-seat DD columns
+    let dd_n_plays_col = headers.iter().position(|h| h == "DD_N_Plays")
+        .ok_or_else(|| anyhow::anyhow!("Column 'DD_N_Plays' not found - run analyze-dd first with updated version"))?;
+    let dd_s_plays_col = headers.iter().position(|h| h == "DD_S_Plays")
+        .ok_or_else(|| anyhow::anyhow!("Column 'DD_S_Plays' not found"))?;
+    let dd_e_plays_col = headers.iter().position(|h| h == "DD_E_Plays")
+        .ok_or_else(|| anyhow::anyhow!("Column 'DD_E_Plays' not found"))?;
+    let dd_w_plays_col = headers.iter().position(|h| h == "DD_W_Plays")
+        .ok_or_else(|| anyhow::anyhow!("Column 'DD_W_Plays' not found"))?;
+    let dd_n_errors_col = headers.iter().position(|h| h == "DD_N_Errors")
+        .ok_or_else(|| anyhow::anyhow!("Column 'DD_N_Errors' not found"))?;
+    let dd_s_errors_col = headers.iter().position(|h| h == "DD_S_Errors")
+        .ok_or_else(|| anyhow::anyhow!("Column 'DD_S_Errors' not found"))?;
+    let dd_e_errors_col = headers.iter().position(|h| h == "DD_E_Errors")
+        .ok_or_else(|| anyhow::anyhow!("Column 'DD_E_Errors' not found"))?;
+    let dd_w_errors_col = headers.iter().position(|h| h == "DD_W_Errors")
+        .ok_or_else(|| anyhow::anyhow!("Column 'DD_W_Errors' not found"))?;
 
     // Collect stats per player
     let mut player_stats: HashMap<String, PlayerStats> = HashMap::new();
@@ -2142,7 +2325,7 @@ fn compute_stats(input: &PathBuf, top_n: usize, output: Option<&PathBuf>) -> Res
         let record = result.context("Failed to read CSV row")?;
         processed += 1;
 
-        // Get player names
+        // Get player names (lowercase for consistency)
         let north = record.get(n_col).unwrap_or("").to_lowercase();
         let south = record.get(s_col).unwrap_or("").to_lowercase();
         let east = record.get(e_col).unwrap_or("").to_lowercase();
@@ -2155,14 +2338,23 @@ fn compute_stats(input: &PathBuf, top_n: usize, output: Option<&PathBuf>) -> Res
             continue;
         }
 
-        // Get DD analysis
-        let dd_analysis = record.get(dd_col).unwrap_or("");
-        if dd_analysis.is_empty() || dd_analysis.starts_with("ERROR") {
+        // Get per-seat DD plays and errors
+        let n_plays: u64 = record.get(dd_n_plays_col).and_then(|s| s.parse().ok()).unwrap_or(0);
+        let s_plays: u64 = record.get(dd_s_plays_col).and_then(|s| s.parse().ok()).unwrap_or(0);
+        let e_plays: u64 = record.get(dd_e_plays_col).and_then(|s| s.parse().ok()).unwrap_or(0);
+        let w_plays: u64 = record.get(dd_w_plays_col).and_then(|s| s.parse().ok()).unwrap_or(0);
+        let n_errors: u64 = record.get(dd_n_errors_col).and_then(|s| s.parse().ok()).unwrap_or(0);
+        let s_errors: u64 = record.get(dd_s_errors_col).and_then(|s| s.parse().ok()).unwrap_or(0);
+        let e_errors: u64 = record.get(dd_e_errors_col).and_then(|s| s.parse().ok()).unwrap_or(0);
+        let w_errors: u64 = record.get(dd_w_errors_col).and_then(|s| s.parse().ok()).unwrap_or(0);
+
+        // Skip rows with no DD data (all plays are 0 means no cardplay analyzed)
+        if n_plays == 0 && s_plays == 0 && e_plays == 0 && w_plays == 0 {
             skipped += 1;
             continue;
         }
 
-        // Determine declarer and dummy
+        // Determine declarer, dummy, and defenders based on declarer direction
         let (declarer_name, dummy_name, def1_name, def2_name) = match declarer.chars().next() {
             Some('N') => (&north, &south, &east, &west),
             Some('S') => (&south, &north, &east, &west),
@@ -2174,108 +2366,59 @@ fn compute_stats(input: &PathBuf, top_n: usize, output: Option<&PathBuf>) -> Res
             }
         };
 
-        // Parse DD analysis and attribute costs
-        // Format: T1:c1,c2,c3,c4|T2:c1,c2,c3,c4|...
-        // Order in each trick: leader, 2nd, 3rd, 4th
-        // Leader of trick 1 is left of declarer
+        // Map seat plays/errors to player names and roles
+        // Declarer side: declarer + dummy plays/errors go to declarer's declaring stats
+        // Defense side: each defender's plays/errors go to their own defending stats
+        let seat_data = [
+            (&north, 'N', n_plays, n_errors),
+            (&south, 'S', s_plays, s_errors),
+            (&east, 'E', e_plays, e_errors),
+            (&west, 'W', w_plays, w_errors),
+        ];
 
-        let initial_leader = match declarer.chars().next() {
-            Some('N') => 'E', // E leads vs N
-            Some('E') => 'S', // S leads vs E
-            Some('S') => 'W', // W leads vs S
-            Some('W') => 'N', // N leads vs W
-            _ => continue,
-        };
-
-        // Track who made each play and their cost
-        let mut current_leader = initial_leader;
-
-        for trick_str in dd_analysis.split('|') {
-            // Parse "T1:c1,c2,c3,c4"
-            let costs_part = if let Some(idx) = trick_str.find(':') {
-                &trick_str[idx + 1..]
-            } else {
-                continue;
-            };
-
-            let costs: Vec<u8> = costs_part
-                .split(',')
-                .filter_map(|s| s.trim().parse().ok())
-                .collect();
-
-            if costs.len() != 4 {
+        for (player_name, _seat, plays, errors) in &seat_data {
+            if player_name.is_empty() {
                 continue;
             }
 
-            // Determine seat order for this trick
-            let seat_order = get_seat_order(current_leader);
+            let is_declarer = *player_name == declarer_name;
+            let is_dummy = *player_name == dummy_name;
+            let is_declaring_side = is_declarer || is_dummy;
 
-            // Attribute each cost to a player
-            let mut trick_winner = current_leader;
-            let mut max_in_trick = 0u8; // We don't track suit, so just track position
-
-            for (i, &cost) in costs.iter().enumerate() {
-                let seat = seat_order[i];
-                let player_name = match seat {
-                    'N' => &north,
-                    'S' => &south,
-                    'E' => &east,
-                    'W' => &west,
-                    _ => continue,
-                };
-
-                if player_name.is_empty() {
-                    continue;
-                }
-
+            if is_declaring_side {
+                // Declaring side plays/errors go to DECLARER's stats (not dummy)
                 let stats = player_stats
-                    .entry(player_name.clone())
+                    .entry(declarer_name.clone())
+                    .or_insert_with(|| PlayerStats::new(declarer_name));
+                stats.declaring_plays += plays;
+                stats.declaring_errors += errors;
+            } else {
+                // Defender's plays/errors go to their own stats
+                let stats = player_stats
+                    .entry((*player_name).clone())
                     .or_insert_with(|| PlayerStats::new(player_name));
-
-                // Is this player declaring/dummy or defending?
-                let is_declaring_side = player_name == declarer_name || player_name == dummy_name;
-
-                if is_declaring_side {
-                    stats.declaring_plays += 1;
-                    if cost > 0 {
-                        stats.declaring_errors += 1;
-                    }
-                    stats.declaring_total_cost += cost as u64;
-                } else {
-                    stats.defending_plays += 1;
-                    if cost > 0 {
-                        stats.defending_errors += 1;
-                    }
-                    stats.defending_total_cost += cost as u64;
-                }
-
-                // Simple trick winner tracking (position 0 wins ties)
-                if i == 0 || cost == 0 {
-                    if i == 0 {
-                        trick_winner = seat;
-                        max_in_trick = 0;
-                    }
-                }
+                stats.defending_plays += plays;
+                stats.defending_errors += errors;
             }
-
-            // For simplicity, rotate leader clockwise (we don't have actual trick winner info here)
-            // This is approximate - a better approach would track actual cards
-            current_leader = trick_winner; // This is a rough approximation
         }
 
         // Track deals per player
-        for name in [&north, &south, &east, &west] {
-            if name.is_empty() {
+        for (player_name, _seat, _, _) in &seat_data {
+            if player_name.is_empty() {
                 continue;
             }
             let stats = player_stats
-                .entry(name.clone())
-                .or_insert_with(|| PlayerStats::new(name));
+                .entry((*player_name).clone())
+                .or_insert_with(|| PlayerStats::new(player_name));
 
-            let is_declaring_side = name == declarer_name || name == dummy_name;
-            if is_declaring_side {
+            // All four players increment total_deals
+            stats.total_deals += 1;
+
+            // Only declarer counts as "declaring", only defenders count as "defending"
+            // Dummy doesn't count for either
+            if *player_name == declarer_name {
                 stats.declaring_deals += 1;
-            } else {
+            } else if *player_name != dummy_name {
                 stats.defending_deals += 1;
             }
         }
@@ -2300,10 +2443,10 @@ fn compute_stats(input: &PathBuf, top_n: usize, output: Option<&PathBuf>) -> Res
     }
 
     // Print header
-    println!("\n{:=^100}", " DD Error Rate Analysis ");
-    println!("\n{:<20} {:>8} {:>12} {:>10} {:>12} {:>10} {:>10}",
-        "Player", "Deals", "Decl Plays", "Decl Err%", "Def Plays", "Def Err%", "Diff");
-    println!("{:-<100}", "");
+    println!("\n{:=^116}", " DD Error Rate Analysis ");
+    println!("\n{:<20} {:>8} {:>6} {:>6} {:>12} {:>10} {:>12} {:>10} {:>10}",
+        "Player", "Deals", "Decl", "Def", "Decl Plays", "Decl Err%", "Def Plays", "Def Err%", "Diff");
+    println!("{:-<116}", "");
 
     // Print top N players
     for player in players.iter().take(top_n) {
@@ -2313,9 +2456,11 @@ fn compute_stats(input: &PathBuf, top_n: usize, output: Option<&PathBuf>) -> Res
         let decl_ci = player.declaring_ci();
         let def_ci = player.defending_ci();
 
-        println!("{:<20} {:>8} {:>12} {:>9.2}% {:>12} {:>9.2}% {:>+9.2}%",
+        println!("{:<20} {:>8} {:>6} {:>6} {:>12} {:>9.2}% {:>12} {:>9.2}% {:>+9.2}%",
             truncate_name(&player.name, 20),
             player.total_deals(),
+            player.declaring_deals,
+            player.defending_deals,
             player.declaring_plays,
             decl_rate,
             player.defending_plays,
@@ -2325,7 +2470,9 @@ fn compute_stats(input: &PathBuf, top_n: usize, output: Option<&PathBuf>) -> Res
 
         // Print confidence intervals on separate line if enough data
         if !decl_ci.is_nan() || !def_ci.is_nan() {
-            println!("{:<20} {:>8} {:>12} {:>10} {:>12} {:>10}",
+            println!("{:<20} {:>8} {:>6} {:>6} {:>12} {:>10} {:>12} {:>10}",
+                "",
+                "",
                 "",
                 "",
                 format!("(±{:.2}%)", decl_ci),
@@ -2337,21 +2484,25 @@ fn compute_stats(input: &PathBuf, top_n: usize, output: Option<&PathBuf>) -> Res
     }
 
     // Print Field aggregate
-    println!("{:-<100}", "");
+    println!("{:-<116}", "");
     let decl_rate = field_stats.declaring_error_rate();
     let def_rate = field_stats.defending_error_rate();
     let diff = decl_rate - def_rate;
 
-    println!("{:<20} {:>8} {:>12} {:>9.2}% {:>12} {:>9.2}% {:>+9.2}%",
+    println!("{:<20} {:>8} {:>6} {:>6} {:>12} {:>9.2}% {:>12} {:>9.2}% {:>+9.2}%",
         "FIELD (others)",
         field_stats.total_deals(),
+        field_stats.declaring_deals,
+        field_stats.defending_deals,
         field_stats.declaring_plays,
         decl_rate,
         field_stats.defending_plays,
         def_rate,
         diff
     );
-    println!("{:<20} {:>8} {:>12} {:>10} {:>12} {:>10}",
+    println!("{:<20} {:>8} {:>6} {:>6} {:>12} {:>10} {:>12} {:>10}",
+        "",
+        "",
         "",
         "",
         format!("(±{:.2}%)", field_stats.declaring_ci()),
@@ -2464,8 +2615,8 @@ fn compute_stats(input: &PathBuf, top_n: usize, output: Option<&PathBuf>) -> Res
 
         writer.write_record(&[
             "Player", "Total_Deals", "Decl_Deals", "Def_Deals",
-            "Decl_Plays", "Decl_Errors", "Decl_Err_Pct", "Decl_Avg_Cost", "Decl_CI",
-            "Def_Plays", "Def_Errors", "Def_Err_Pct", "Def_Avg_Cost", "Def_CI",
+            "Decl_Plays", "Decl_Errors", "Decl_Err_Pct", "Decl_CI",
+            "Def_Plays", "Def_Errors", "Def_Err_Pct", "Def_CI",
             "Diff_Pct"
         ])?;
 
@@ -2478,12 +2629,10 @@ fn compute_stats(input: &PathBuf, top_n: usize, output: Option<&PathBuf>) -> Res
                 &player.declaring_plays.to_string(),
                 &player.declaring_errors.to_string(),
                 &format!("{:.4}", player.declaring_error_rate()),
-                &format!("{:.4}", player.declaring_avg_cost()),
                 &format!("{:.4}", player.declaring_ci()),
                 &player.defending_plays.to_string(),
                 &player.defending_errors.to_string(),
                 &format!("{:.4}", player.defending_error_rate()),
-                &format!("{:.4}", player.defending_avg_cost()),
                 &format!("{:.4}", player.defending_ci()),
                 &format!("{:.4}", player.declaring_error_rate() - player.defending_error_rate()),
             ])?;
@@ -2498,12 +2647,10 @@ fn compute_stats(input: &PathBuf, top_n: usize, output: Option<&PathBuf>) -> Res
             &field_stats.declaring_plays.to_string(),
             &field_stats.declaring_errors.to_string(),
             &format!("{:.4}", field_stats.declaring_error_rate()),
-            &format!("{:.4}", field_stats.declaring_avg_cost()),
             &format!("{:.4}", field_stats.declaring_ci()),
             &field_stats.defending_plays.to_string(),
             &field_stats.defending_errors.to_string(),
             &format!("{:.4}", field_stats.defending_error_rate()),
-            &format!("{:.4}", field_stats.defending_avg_cost()),
             &format!("{:.4}", field_stats.defending_ci()),
             &format!("{:.4}", field_stats.declaring_error_rate() - field_stats.defending_error_rate()),
         ])?;
