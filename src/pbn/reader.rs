@@ -48,11 +48,30 @@ pub fn read_pbn(content: &str) -> Result<Vec<Board>> {
     let mut boards = Vec::new();
     let mut current_board = Board::new();
     let mut has_content = false;
+    let mut in_commentary = false;
 
     for line in content.lines() {
         let line = line.trim();
 
-        // Empty line may signal end of board
+        // Track multi-line commentary blocks { ... }
+        // Commentary can start and end on same line, or span multiple lines
+        if in_commentary {
+            if line.contains('}') {
+                in_commentary = false;
+            }
+            continue;
+        }
+
+        // Check for start of commentary
+        if line.starts_with('{') {
+            // If closing brace on same line, it's a single-line comment
+            if !line.contains('}') {
+                in_commentary = true;
+            }
+            continue;
+        }
+
+        // Empty line may signal end of board (but not inside commentary)
         if line.is_empty() {
             if has_content {
                 boards.push(current_board);
@@ -62,8 +81,8 @@ pub fn read_pbn(content: &str) -> Result<Vec<Board>> {
             continue;
         }
 
-        // Skip comments and directives
-        if line.starts_with(';') || line.starts_with('%') || line.starts_with('{') {
+        // Skip line comments and directives
+        if line.starts_with(';') || line.starts_with('%') {
             continue;
         }
 
@@ -176,6 +195,12 @@ mod tests {
         assert_eq!(boards[0].number, Some(1));
         assert_eq!(boards[0].dealer, Some(Direction::North));
         assert_eq!(boards[0].vulnerable, Vulnerability::None);
+        // Verify deal was parsed
+        let deal_str = boards[0].deal.to_pbn(Direction::North);
+        assert_eq!(
+            deal_str,
+            "N:K843.T542.J6.863 AQJ7.K.Q75.AT942 962.AJ7.KT82.J75 T5.Q9863.A943.KQ"
+        );
     }
 
     #[test]
@@ -197,5 +222,38 @@ mod tests {
         assert_eq!(boards[1].number, Some(2));
         assert_eq!(boards[1].dealer, Some(Direction::East));
         assert_eq!(boards[1].vulnerable, Vulnerability::NorthSouth);
+    }
+
+    #[test]
+    fn test_read_pbn_with_multiline_commentary() {
+        let pbn = r#"
+[Board "1"]
+[Dealer "N"]
+[Vulnerable "None"]
+[Deal "N:K843.T542.J6.863 AQJ7.K.Q75.AT942 962.AJ7.KT82.J75 T5.Q9863.A943.KQ"]
+{This is a multi-line
+commentary that spans
+
+several lines with blank lines inside.}
+
+[Board "2"]
+[Dealer "E"]
+[Vulnerable "NS"]
+[Deal "E:Q7.AKT9.JT3.JT96 J653.QJ8.A.AQ732 K92.654.K954.K84 AT84.732.Q8762.5"]
+"#;
+        let boards = read_pbn(pbn).unwrap();
+        // Should find exactly 2 boards, not more due to empty lines in commentary
+        assert_eq!(boards.len(), 2, "Found {} boards instead of 2", boards.len());
+        assert_eq!(boards[0].number, Some(1));
+        assert_eq!(boards[1].number, Some(2));
+        // Verify deals are parsed
+        assert_eq!(
+            boards[0].deal.to_pbn(Direction::North),
+            "N:K843.T542.J6.863 AQJ7.K.Q75.AT942 962.AJ7.KT82.J75 T5.Q9863.A943.KQ"
+        );
+        assert_eq!(
+            boards[1].deal.to_pbn(Direction::East),
+            "E:Q7.AKT9.JT3.JT96 J653.QJ8.A.AQ732 K92.654.K954.K84 AT84.732.Q8762.5"
+        );
     }
 }
