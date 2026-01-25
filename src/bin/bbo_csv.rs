@@ -11,7 +11,7 @@ use bridge_parsers::tinyurl::UrlResolver;
 use bridge_solver::{NORTH, EAST, SOUTH, WEST, SPADE, HEART, DIAMOND, CLUB};
 // Card, Rank, Suit only used in #[cfg(test)] functions
 #[cfg(test)]
-use bridge_parsers::model::{Card, Rank, Suit};
+use bridge_parsers::{Card, Rank, Suit};
 #[cfg(test)]
 use bridge_solver::NOTRUMP;
 #[cfg(test)]
@@ -905,7 +905,7 @@ fn extract_row_data(record: &StringRecord, cols: &ColumnIndices) -> Option<RowDa
         if let Some(url) = record.get(lin_url_col) {
             if !url.is_empty() {
                 if let Ok(lin_data) = parse_lin_from_url(url) {
-                    let deal_pbn = lin_data.deal.to_pbn(bridge_parsers::model::Direction::North);
+                    let deal_pbn = lin_data.deal.to_pbn(bridge_parsers::Direction::North);
 
                     // Use explicit columns if available, otherwise extract from LIN
                     let contract = contract_from_col
@@ -996,7 +996,7 @@ fn extract_contract_from_lin(lin_data: &bridge_parsers::lin::LinData) -> String 
 /// Extract declarer from LIN data by finding who holds the opening lead card
 /// This is more reliable than parsing the auction (which has artificial bids)
 fn extract_declarer_from_lin(lin_data: &bridge_parsers::lin::LinData) -> String {
-    use bridge_parsers::model::Direction;
+    use bridge_parsers::Direction;
 
     // If there's cardplay, use the opening lead to determine the leader
     // Then declarer is to the right of the leader
@@ -1004,9 +1004,9 @@ fn extract_declarer_from_lin(lin_data: &bridge_parsers::lin::LinData) -> String 
         let opening_lead = &lin_data.play[0];
 
         // Find which hand has this card
-        for dir in Direction::all() {
+        for dir in Direction::ALL {
             let hand = lin_data.deal.hand(dir);
-            if hand.holding(opening_lead.suit).contains(opening_lead.rank) {
+            if hand.has_card(*opening_lead) {
                 // This player led, so declarer is to their right
                 let declarer = match dir {
                     Direction::North => "W", // N leads means W declares
@@ -1395,7 +1395,7 @@ fn parse_card_str(s: &str) -> Result<Card> {
         _ => return Err(anyhow::anyhow!("Invalid suit: {}", suit_char)),
     };
 
-    let rank = Rank::from_pbn_char(rank_char)
+    let rank = Rank::from_char(rank_char)
         .ok_or_else(|| anyhow::anyhow!("Invalid rank: {}", rank_char))?;
 
     Ok(Card::new(suit, rank))
@@ -2464,20 +2464,23 @@ fn compute_stats(input: &PathBuf, top_n: usize, output: Option<&PathBuf>) -> Res
     }
 
     // Print header
-    println!("\n{:=^116}", " DD Error Rate Analysis ");
-    println!("\n{:<20} {:>8} {:>6} {:>6} {:>12} {:>10} {:>12} {:>10} {:>10}",
-        "Player", "Deals", "Decl", "Def", "Decl Plays", "Decl Err%", "Def Plays", "Def Err%", "Diff");
-    println!("{:-<116}", "");
+    println!("\n{:=^126}", " DD Error Rate Analysis ");
+    println!("\n{:<20} {:>8} {:>6} {:>6} {:>12} {:>10} {:>12} {:>10} {:>10} {:>8}",
+        "Player", "Deals", "Decl", "Def", "Decl Plays", "Decl Err%", "Def Plays", "Def Err%", "Diff", "Rel%");
+    println!("{:-<126}", "");
 
     // Print top N players
     for player in players.iter().take(top_n) {
         let decl_rate = player.declaring_error_rate();
         let def_rate = player.defending_error_rate();
         let diff = decl_rate - def_rate;
+        // Relative percent: how much better/worse is defense vs declaring
+        // Negative means defense is better (fewer errors), positive means worse
+        let rel_pct = if decl_rate > 0.0 { -diff / decl_rate * 100.0 } else { 0.0 };
         let decl_ci = player.declaring_ci();
         let def_ci = player.defending_ci();
 
-        println!("{:<20} {:>8} {:>6} {:>6} {:>12} {:>9.2}% {:>12} {:>9.2}% {:>+9.2}%",
+        println!("{:<20} {:>8} {:>6} {:>6} {:>12} {:>9.2}% {:>12} {:>9.2}% {:>+9.2}% {:>+7.1}%",
             truncate_name(&player.name, 20),
             player.total_deals(),
             player.declaring_deals,
@@ -2486,7 +2489,8 @@ fn compute_stats(input: &PathBuf, top_n: usize, output: Option<&PathBuf>) -> Res
             decl_rate,
             player.defending_plays,
             def_rate,
-            diff
+            diff,
+            rel_pct
         );
 
         // Print confidence intervals on separate line if enough data
@@ -2505,12 +2509,13 @@ fn compute_stats(input: &PathBuf, top_n: usize, output: Option<&PathBuf>) -> Res
     }
 
     // Print Field aggregate
-    println!("{:-<116}", "");
+    println!("{:-<126}", "");
     let decl_rate = field_stats.declaring_error_rate();
     let def_rate = field_stats.defending_error_rate();
     let diff = decl_rate - def_rate;
+    let rel_pct = if decl_rate > 0.0 { -diff / decl_rate * 100.0 } else { 0.0 };
 
-    println!("{:<20} {:>8} {:>6} {:>6} {:>12} {:>9.2}% {:>12} {:>9.2}% {:>+9.2}%",
+    println!("{:<20} {:>8} {:>6} {:>6} {:>12} {:>9.2}% {:>12} {:>9.2}% {:>+9.2}% {:>+7.1}%",
         "FIELD (others)",
         field_stats.total_deals(),
         field_stats.declaring_deals,
@@ -2519,7 +2524,8 @@ fn compute_stats(input: &PathBuf, top_n: usize, output: Option<&PathBuf>) -> Res
         decl_rate,
         field_stats.defending_plays,
         def_rate,
-        diff
+        diff,
+        rel_pct
     );
     println!("{:<20} {:>8} {:>6} {:>6} {:>12} {:>10} {:>12} {:>10}",
         "",
@@ -2722,10 +2728,10 @@ fn compute_stats(input: &PathBuf, top_n: usize, output: Option<&PathBuf>) -> Res
             }
         }
 
-        println!("\n{:=^116}", " Suspicious Patterns (Def better than Decl, p < 20%) ");
-        println!("\n{:<24} {:>8} {:>6} {:>6} {:>10} {:>10} {:>12} {:>10} {:>10}",
-            "Player", "Deals", "Decl", "Def", "Decl Err%", "Def Err%", "Def-Decl", "Z-score", "P-value");
-        println!("{:-<120}", "");
+        println!("\n{:=^124}", " Suspicious Patterns (Def better than Decl, p < 20%) ");
+        println!("\n{:<24} {:>8} {:>6} {:>6} {:>10} {:>10} {:>12} {:>8} {:>10} {:>10}",
+            "Player", "Deals", "Decl", "Def", "Decl Err%", "Def Err%", "Def-Decl", "Rel%", "Z-score", "P-value");
+        println!("{:-<128}", "");
 
         for (player, def_minus_decl, z, p_val) in &suspicious {
             // Annotate player name with partnership number if applicable
@@ -2735,19 +2741,25 @@ fn compute_stats(input: &PathBuf, top_n: usize, output: Option<&PathBuf>) -> Res
                 truncate_name(&player.name, 24)
             };
 
-            println!("{:<24} {:>8} {:>6} {:>6} {:>9.2}% {:>9.2}% {:>+11.2}% {:>10.2} {:>9.4}",
+            // Relative percent: how much better defense is vs declaring
+            // Negative def_minus_decl means defense is better, so rel_pct is positive improvement
+            let decl_rate = player.declaring_error_rate();
+            let rel_pct = if decl_rate > 0.0 { -def_minus_decl / decl_rate * 100.0 } else { 0.0 };
+
+            println!("{:<24} {:>8} {:>6} {:>6} {:>9.2}% {:>9.2}% {:>+11.2}% {:>+7.1}% {:>10.2} {:>9.4}",
                 display_name,
                 player.total_deals(),
                 player.declaring_deals,
                 player.defending_deals,
-                player.declaring_error_rate(),
+                decl_rate,
                 player.defending_error_rate(),
                 def_minus_decl,
+                rel_pct,
                 z,
                 p_val
             );
         }
-        println!("{:-<120}", "");
+        println!("{:-<128}", "");
         println!("Note: These players show defense error rates LOWER than their declaring rates,");
         println!("      which is unusual (defense is typically harder than declaring).");
         if !partner_annotations.is_empty() {

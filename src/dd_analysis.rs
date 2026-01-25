@@ -4,7 +4,7 @@
 //! computing the cost of each card or trick relative to optimal play.
 
 use crate::lin::LinData;
-use crate::model::{Card, Direction, Rank, Suit};
+use crate::{Card, Direction, Rank, Suit};
 use bridge_solver::cards::{card_of, suit_of};
 use bridge_solver::{CutoffCache, Hands, PartialTrick, PatternCache, Solver};
 use bridge_solver::{CLUB, DIAMOND, EAST, HEART, NOTRUMP, NORTH, SOUTH, SPADE, WEST};
@@ -252,7 +252,7 @@ pub fn compute_dd_costs(
 
             // Debug output
             if debug {
-                let card_str = format!("{}{}", card.suit.letter(), card.rank.to_char());
+                let card_str = format!("{}{}", card.suit.to_char(), card.rank.to_char());
                 eprintln!(
                     "  T{} pos{}: {} dd_before={} dd_after={}",
                     trick_idx + 1,
@@ -705,9 +705,9 @@ fn extract_contract(lin_data: &LinData) -> String {
 fn extract_declarer(lin_data: &LinData) -> String {
     if !lin_data.play.is_empty() {
         let opening_lead = &lin_data.play[0];
-        for dir in Direction::all() {
+        for dir in Direction::ALL {
             let hand = lin_data.deal.hand(dir);
-            if hand.holding(opening_lead.suit).contains(opening_lead.rank) {
+            if hand.has_card(*opening_lead) {
                 return match dir {
                     Direction::North => "West".to_string(),
                     Direction::East => "North".to_string(),
@@ -784,7 +784,7 @@ fn parse_card_str(s: &str) -> Result<Card, String> {
     };
 
     let rank =
-        Rank::from_pbn_char(rank_char).ok_or_else(|| format!("Invalid rank: {}", rank_char))?;
+        Rank::from_char(rank_char).ok_or_else(|| format!("Invalid rank: {}", rank_char))?;
 
     Ok(Card::new(suit, rank))
 }

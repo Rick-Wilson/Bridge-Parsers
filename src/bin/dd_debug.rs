@@ -10,7 +10,7 @@
 
 use anyhow::{Context, Result};
 use bridge_parsers::lin::parse_lin_from_url;
-use bridge_parsers::model::{Card, Direction, Rank, Suit};
+use bridge_parsers::{Card, Direction, Rank, Suit};
 use bridge_parsers::tinyurl::UrlResolver;
 use bridge_solver::cards::{card_of, suit_of};
 use bridge_solver::{CutoffCache, Hands, PartialTrick, PatternCache, Solver};
@@ -67,9 +67,9 @@ fn main() -> Result<()> {
 
     // Display hands
     println!("\n=== Hands ===");
-    for dir in Direction::all() {
+    for dir in Direction::ALL {
         let hand = lin_data.deal.hand(dir);
-        println!("{:5}: {}", format!("{:?}", dir), hand);
+        println!("{:5}: {}", format!("{:?}", dir), hand.to_pbn());
     }
 
     // Extract contract and declarer
@@ -219,7 +219,7 @@ fn main() -> Result<()> {
                     if dd_after > dd_before { dd_after - dd_before } else { 0 }
                 };
 
-                let card_str = format!("{}{}", card.suit.letter(), card.rank.to_char());
+                let card_str = format!("{}{}", card.suit.to_char(), card.rank.to_char());
                 let position = match card_idx {
                     0 => "Lead", 1 => "2nd", 2 => "3rd", 3 => "4th", _ => "?",
                 };
@@ -269,7 +269,7 @@ fn main() -> Result<()> {
                 current_hands[seat].remove(solver_card);
                 cards_in_trick.push((seat, solver_card));
 
-                let card_str = format!("{}{}", card.suit.letter(), card.rank.to_char());
+                let card_str = format!("{}{}", card.suit.to_char(), card.rank.to_char());
                 let position = match card_idx {
                     0 => "Lead", 1 => "2nd", 2 => "3rd", 3 => "4th", _ => "?",
                 };
@@ -435,9 +435,9 @@ fn extract_contract(lin_data: &bridge_parsers::lin::LinData) -> String {
 fn extract_declarer(lin_data: &bridge_parsers::lin::LinData) -> String {
     if !lin_data.play.is_empty() {
         let opening_lead = &lin_data.play[0];
-        for dir in Direction::all() {
+        for dir in Direction::ALL {
             let hand = lin_data.deal.hand(dir);
-            if hand.holding(opening_lead.suit).contains(opening_lead.rank) {
+            if hand.has_card(*opening_lead) {
                 return match dir {
                     Direction::North => "West".to_string(),
                     Direction::East => "North".to_string(),
@@ -512,7 +512,7 @@ fn parse_card_str(s: &str) -> Result<Card> {
         _ => return Err(anyhow::anyhow!("Invalid suit: {}", suit_char)),
     };
 
-    let rank = Rank::from_pbn_char(rank_char)
+    let rank = Rank::from_char(rank_char)
         .ok_or_else(|| anyhow::anyhow!("Invalid rank: {}", rank_char))?;
 
     Ok(Card::new(suit, rank))

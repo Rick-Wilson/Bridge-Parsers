@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use bridge_parsers::acbl;
 use bridge_parsers::bws;
-use bridge_parsers::model::Direction;
+use bridge_parsers::Direction;
 use bridge_parsers::pbn;
 use bridge_parsers::xlsx;
 
@@ -157,10 +157,10 @@ fn convert(input: &PathBuf, output: &PathBuf, masterpoints_url: Option<&str>) ->
                 board_nums
                     .into_iter()
                     .map(|n| {
-                        bridge_parsers::model::Board::new()
+                        bridge_parsers::Board::new()
                             .with_number(n)
-                            .with_dealer(bridge_parsers::model::dealer_from_board_number(n))
-                            .with_vulnerability(bridge_parsers::model::Vulnerability::from_board_number(n))
+                            .with_dealer(bridge_parsers::dealer_from_board_number(n))
+                            .with_vulnerability(bridge_parsers::Vulnerability::from_board_number(n))
                     })
                     .collect()
             }
@@ -302,7 +302,7 @@ fn validate(input: &PathBuf) -> Result<()> {
             for board in &boards {
                 if let Some(num) = board.number {
                     // Check hand sizes
-                    for dir in Direction::all() {
+                    for dir in Direction::ALL {
                         let hand = board.deal.hand(dir);
                         let len = hand.len();
                         if len != 13 && len != 0 {
@@ -339,7 +339,7 @@ fn validate(input: &PathBuf) -> Result<()> {
     Ok(())
 }
 
-fn print_board_info(board: &bridge_parsers::model::Board) {
+fn print_board_info(board: &bridge_parsers::Board) {
     if let Some(num) = board.number {
         println!("Board {}", num);
     }
@@ -352,10 +352,10 @@ fn print_board_info(board: &bridge_parsers::model::Board) {
     println!("  HCP: N={} E={} S={} W={}", hcp[0], hcp[1], hcp[2], hcp[3]);
 
     // Print compact deal
-    for dir in Direction::all() {
+    for dir in Direction::ALL {
         let hand = board.deal.hand(dir);
         if hand.len() > 0 {
-            println!("  {}: {}", dir, hand);
+            println!("  {}: {}", dir, hand.to_pbn());
         }
     }
     println!();

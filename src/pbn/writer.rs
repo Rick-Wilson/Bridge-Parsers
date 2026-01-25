@@ -1,4 +1,4 @@
-use crate::model::{Board, Direction};
+use crate::{Board, Direction};
 
 /// Write boards to PBN format
 pub fn write_pbn(boards: &[Board]) -> String {
@@ -96,7 +96,7 @@ pub fn write_pbn_file(boards: &[Board], path: &std::path::Path) -> std::io::Resu
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{Deal, Vulnerability};
+    use crate::{Deal, Vulnerability};
 
     #[test]
     fn test_write_simple_board() {

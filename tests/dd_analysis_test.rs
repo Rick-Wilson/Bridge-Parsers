@@ -373,7 +373,7 @@ fn test_dd_analysis_error_details() {
                         "    Trick {}, pos {}: {}{} (cost: {})",
                         error.trick_num,
                         error.card_position,
-                        error.card.suit.letter(),
+                        error.card.suit.to_char(),
                         error.card.rank.to_char(),
                         error.cost
                     );
@@ -435,7 +435,7 @@ fn test_trick_boundary_debug() {
                 println!(
                     "  - {} T{}: {}{} cost={}",
                     err.player, err.trick_num,
-                    err.card.suit.letter(), err.card.rank.to_char(),
+                    err.card.suit.to_char(), err.card.rank.to_char(),
                     err.cost
                 );
             }
@@ -449,7 +449,7 @@ fn test_trick_boundary_debug() {
                 println!(
                     "  - {} T{} pos{}: {}{} cost={}",
                     err.player, err.trick_num, err.card_position,
-                    err.card.suit.letter(), err.card.rank.to_char(),
+                    err.card.suit.to_char(), err.card.rank.to_char(),
                     err.cost
                 );
             }

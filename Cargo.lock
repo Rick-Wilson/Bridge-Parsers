@@ -101,11 +101,22 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "812e12b5285cc515a9c72a5c1d3b6d46a19dac5acfef5265968c166106e31dd3"
 
 [[package]]
+name = "bridge-encodings"
+version = "0.1.0"
+source = "git+https://github.com/Rick-Wilson/bridge-encodings#0a44ead59a59092a002d380b199fadca92008953"
+dependencies = [
+ "bridge-types",
+ "thiserror",
+]
+
+[[package]]
 name = "bridge-parsers"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "bridge-encodings",
  "bridge-solver",
+ "bridge-types",
  "clap",
  "csv",
  "env_logger",
@@ -126,9 +137,15 @@ dependencies = [
 [[package]]
 name = "bridge-solver"
 version = "0.4.0"
+source = "git+https://github.com/Rick-Wilson/bridge-solver#7e91411c6476754664aa51c73d0d95b476cbf902"
 dependencies = [
- "clap",
+ "bridge-types",
 ]
+
+[[package]]
+name = "bridge-types"
+version = "0.1.0"
+source = "git+https://github.com/Rick-Wilson/bridge-types#57ebeeea9183c0729f0c698e78ea8b19759910fb"
 
 [[package]]
 name = "bumpalo"

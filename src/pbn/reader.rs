@@ -1,5 +1,5 @@
 use crate::error::Result;
-use crate::model::{Board, Deal, Direction, Vulnerability};
+use crate::{Board, Deal, Direction, Vulnerability};
 use nom::{
     bytes::complete::{take_until, take_while1},
     character::complete::{char, space0},

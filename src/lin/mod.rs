@@ -4,7 +4,7 @@
 //! complete hand records including deal, auction, and cardplay in URLs.
 
 use crate::error::{BridgeError, Result};
-use crate::model::{Card, Deal, Direction, Hand, Rank, Suit, Vulnerability};
+use crate::{Card, Deal, Direction, Hand, Rank, Suit, Vulnerability};
 
 /// A bid with optional alert and annotation
 #[derive(Debug, Clone)]
@@ -52,7 +52,7 @@ impl LinData {
             .map(|trick| {
                 trick
                     .iter()
-                    .map(|card| format!("{}{}", card.suit.letter(), card.rank.to_char()))
+                    .map(|card| format!("{}{}", card.suit.to_char(), card.rank.to_char()))
                     .collect::<Vec<_>>()
                     .join(" ")
             })
@@ -247,8 +247,8 @@ fn parse_lin_hand(hand_str: &str) -> Option<Hand> {
             'C' => current_suit = Some(Suit::Clubs),
             _ => {
                 if let Some(suit) = current_suit {
-                    if let Some(rank) = Rank::from_pbn_char(c) {
-                        hand.holding_mut(suit).add(rank);
+                    if let Some(rank) = Rank::from_char(c) {
+                        hand.add_card(Card::new(suit, rank));
                     }
                 }
             }
@@ -262,17 +262,18 @@ fn parse_lin_hand(hand_str: &str) -> Option<Hand> {
 fn calculate_fourth_hand(deal: &Deal, fourth_dir: Direction) -> Option<Hand> {
     let mut fourth = Hand::new();
 
-    for suit in Suit::all() {
-        for rank in Rank::all() {
+    for suit in Suit::ALL {
+        for rank in Rank::ALL {
+            let card = Card::new(suit, rank);
             let mut found = false;
-            for dir in Direction::all() {
-                if dir != fourth_dir && deal.hand(dir).holding(suit).contains(rank) {
+            for dir in Direction::ALL {
+                if dir != fourth_dir && deal.hand(dir).has_card(card) {
                     found = true;
                     break;
                 }
             }
             if !found {
-                fourth.holding_mut(suit).add(rank);
+                fourth.add_card(card);
             }
         }
     }
@@ -298,7 +299,7 @@ fn parse_card(card_str: &str) -> Option<Card> {
     let rank_char = chars.next()?;
 
     let suit = Suit::from_char(suit_char)?;
-    let rank = Rank::from_pbn_char(rank_char)?;
+    let rank = Rank::from_char(rank_char)?;
 
     Some(Card::new(suit, rank))
 }
@@ -373,10 +374,10 @@ mod tests {
     #[test]
     fn test_parse_lin_hand() {
         let hand = parse_lin_hand("SAKQHJT9D8765C432").unwrap();
-        assert_eq!(hand.spades.len(), 3); // AKQ
-        assert_eq!(hand.hearts.len(), 3); // JT9
-        assert_eq!(hand.diamonds.len(), 4); // 8765
-        assert_eq!(hand.clubs.len(), 3); // 432
+        assert_eq!(hand.suit_length(Suit::Spades), 3); // AKQ
+        assert_eq!(hand.suit_length(Suit::Hearts), 3); // JT9
+        assert_eq!(hand.suit_length(Suit::Diamonds), 4); // 8765
+        assert_eq!(hand.suit_length(Suit::Clubs), 3); // 432
     }
 
     #[test]

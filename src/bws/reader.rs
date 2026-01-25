@@ -1,5 +1,5 @@
 use crate::error::{BridgeError, Result};
-use crate::model::{Board, Deal, Hand, Holding, Vulnerability, dealer_from_board_number};
+use crate::{Board, Card, Deal, Direction, Hand, Rank, Suit, Vulnerability, dealer_from_board_number};
 use super::tables::*;
 use std::path::Path;
 use std::process::Command;
@@ -171,33 +171,34 @@ fn hand_records_to_boards(records: &[HandRecordRow]) -> Vec<Board> {
     let mut boards = Vec::new();
 
     for record in records {
-        // Parse holdings from string format (binary encoded cards)
-        let north = parse_hand_from_bws(
-            record.north_spades.as_deref(),
-            record.north_hearts.as_deref(),
-            record.north_diamonds.as_deref(),
-            record.north_clubs.as_deref(),
-        );
-        let east = parse_hand_from_bws(
-            record.east_spades.as_deref(),
-            record.east_hearts.as_deref(),
-            record.east_diamonds.as_deref(),
-            record.east_clubs.as_deref(),
-        );
-        let south = parse_hand_from_bws(
-            record.south_spades.as_deref(),
-            record.south_hearts.as_deref(),
-            record.south_diamonds.as_deref(),
-            record.south_clubs.as_deref(),
-        );
-        let west = parse_hand_from_bws(
-            record.west_spades.as_deref(),
-            record.west_hearts.as_deref(),
-            record.west_diamonds.as_deref(),
-            record.west_clubs.as_deref(),
-        );
+        let mut deal = Deal::new();
 
-        let deal = Deal { north, east, south, west };
+        // Parse each hand from holdings
+        deal.set_hand(Direction::North, parse_hand_from_bws(
+            Suit::Spades, record.north_spades.as_deref(),
+            Suit::Hearts, record.north_hearts.as_deref(),
+            Suit::Diamonds, record.north_diamonds.as_deref(),
+            Suit::Clubs, record.north_clubs.as_deref(),
+        ));
+        deal.set_hand(Direction::East, parse_hand_from_bws(
+            Suit::Spades, record.east_spades.as_deref(),
+            Suit::Hearts, record.east_hearts.as_deref(),
+            Suit::Diamonds, record.east_diamonds.as_deref(),
+            Suit::Clubs, record.east_clubs.as_deref(),
+        ));
+        deal.set_hand(Direction::South, parse_hand_from_bws(
+            Suit::Spades, record.south_spades.as_deref(),
+            Suit::Hearts, record.south_hearts.as_deref(),
+            Suit::Diamonds, record.south_diamonds.as_deref(),
+            Suit::Clubs, record.south_clubs.as_deref(),
+        ));
+        deal.set_hand(Direction::West, parse_hand_from_bws(
+            Suit::Spades, record.west_spades.as_deref(),
+            Suit::Hearts, record.west_hearts.as_deref(),
+            Suit::Diamonds, record.west_diamonds.as_deref(),
+            Suit::Clubs, record.west_clubs.as_deref(),
+        ));
+
         let board_num = record.board as u32;
 
         let board = Board::new()
@@ -215,41 +216,34 @@ fn hand_records_to_boards(records: &[HandRecordRow]) -> Vec<Board> {
 }
 
 /// Parse a hand from BWS holding strings
-/// BWS stores holdings as space-separated card values or binary
+/// BWS stores holdings as space-separated card values or PBN-style strings
 fn parse_hand_from_bws(
-    spades: Option<&str>,
-    hearts: Option<&str>,
-    diamonds: Option<&str>,
-    clubs: Option<&str>,
+    suit1: Suit, holding1: Option<&str>,
+    suit2: Suit, holding2: Option<&str>,
+    suit3: Suit, holding3: Option<&str>,
+    suit4: Suit, holding4: Option<&str>,
 ) -> Hand {
-    Hand {
-        spades: parse_holding_from_bws(spades),
-        hearts: parse_holding_from_bws(hearts),
-        diamonds: parse_holding_from_bws(diamonds),
-        clubs: parse_holding_from_bws(clubs),
-    }
+    let mut hand = Hand::new();
+    add_cards_from_holding(&mut hand, suit1, holding1);
+    add_cards_from_holding(&mut hand, suit2, holding2);
+    add_cards_from_holding(&mut hand, suit3, holding3);
+    add_cards_from_holding(&mut hand, suit4, holding4);
+    hand
 }
 
-/// Parse a holding from BWS format
-/// BWS uses binary encoding where each card is represented by a value
-fn parse_holding_from_bws(s: Option<&str>) -> Holding {
-    use crate::model::Rank;
-
+/// Parse a holding string and add cards to the hand
+fn add_cards_from_holding(hand: &mut Hand, suit: Suit, s: Option<&str>) {
     let s = match s {
         Some(s) if !s.is_empty() => s,
-        _ => return Holding::new(),
+        _ => return,
     };
-
-    let mut holding = Holding::new();
 
     // Try parsing as PBN-style string first (AKQJT9876...)
     for c in s.chars() {
-        if let Some(rank) = Rank::from_pbn_char(c) {
-            holding.add(rank);
+        if let Some(rank) = Rank::from_char(c) {
+            hand.add_card(Card::new(suit, rank));
         }
     }
-
-    holding
 }
 
 /// Get unique board numbers from received data

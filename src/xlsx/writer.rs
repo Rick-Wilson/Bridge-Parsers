@@ -1,5 +1,5 @@
 use crate::error::Result;
-use crate::model::{Board, Contract, Direction, Suit, Vulnerability, calculate_matchpoints};
+use crate::{Board, Contract, Direction, Hand, Rank, Suit, Vulnerability, calculate_matchpoints};
 use rust_xlsxwriter::{
     ConditionalFormat3ColorScale, Format, FormatAlign, FormatBorder, Workbook, Worksheet,
 };
@@ -111,13 +111,20 @@ fn write_hand_records_sheet(sheet: &mut Worksheet, boards: &[Board]) -> Result<(
 }
 
 /// Format a hand in compact notation (S:AKQ H:JT9 D:876 C:5432)
-fn format_hand_compact(hand: &crate::model::Hand) -> String {
+fn format_hand_compact(hand: &Hand) -> String {
     let mut parts = Vec::new();
 
-    for suit in Suit::all() {
-        let holding = hand.holding(suit);
-        if !holding.is_empty() {
-            parts.push(format!("{}{}", suit.letter(), holding.to_pbn()));
+    for suit in Suit::ALL {
+        let mut ranks: Vec<Rank> = hand.cards()
+            .iter()
+            .filter(|c| c.suit == suit)
+            .map(|c| c.rank)
+            .collect();
+        ranks.sort_by(|a, b| b.cmp(a)); // Sort descending (Ace first)
+
+        if !ranks.is_empty() {
+            let ranks_str: String = ranks.iter().map(|r| r.to_char()).collect();
+            parts.push(format!("{}{}", suit.to_char(), ranks_str));
         }
     }
 
@@ -744,7 +751,6 @@ fn write_sections_sheet(sheet: &mut Worksheet, data: &crate::bws::BwsData) -> Re
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::Hand;
 
     #[test]
     fn test_format_hand_compact() {
