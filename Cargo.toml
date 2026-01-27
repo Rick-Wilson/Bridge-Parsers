@@ -20,18 +20,8 @@ scraper = "0.22"
 regex = "1.10"
 lazy_static = "1.5"
 url = "2.5"
-rayon = "1.10"
 bridge-types = { git = "https://github.com/Rick-Wilson/bridge-types" }
 bridge-encodings = { git = "https://github.com/Rick-Wilson/bridge-encodings" }
-bridge-solver = { git = "https://github.com/Rick-Wilson/bridge-solver" }
-
-[[bin]]
-name = "bbo-csv"
-path = "src/bin/bbo_csv.rs"
-
-[[bin]]
-name = "dd-debug"
-path = "src/bin/dd_debug.rs"
 
 [dev-dependencies]
 tempfile = "3"
