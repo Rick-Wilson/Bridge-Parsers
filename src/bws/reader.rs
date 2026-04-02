@@ -12,6 +12,7 @@ pub struct BwsData {
     pub sections: Vec<SectionRow>,
     pub player_names: Vec<PlayerNameRow>,
     pub player_numbers: Vec<PlayerNumberRow>,
+    pub round_data: Vec<RoundDataRow>,
     pub received_data: Vec<ReceivedDataRow>,
     pub hand_records: Vec<HandRecordRow>,
     pub boards: Vec<Board>,
@@ -147,6 +148,17 @@ pub fn read_bws(path: &Path) -> Result<BwsData> {
         for result in reader.deserialize() {
             if let Ok(row) = result {
                 data.player_numbers.push(row);
+            }
+        }
+    }
+
+    // Read RoundData table (pair-to-table assignments per round)
+    if tables.contains(&"RoundData".to_string()) {
+        let csv = export_table(path, "RoundData")?;
+        let mut reader = csv::Reader::from_reader(csv.as_bytes());
+        for result in reader.deserialize() {
+            if let Ok(row) = result {
+                data.round_data.push(row);
             }
         }
     }

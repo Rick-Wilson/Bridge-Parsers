@@ -84,3 +84,18 @@ pub struct PlayerNumberRow {
     pub number: String,
     pub name: Option<String>,
 }
+
+/// A round assignment (maps pairs to tables for each round)
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct RoundDataRow {
+    pub section: i32,
+    pub table: i32,
+    pub round: i32,
+    #[serde(rename = "NSPair")]
+    pub ns_pair: i32,
+    #[serde(rename = "EWPair")]
+    pub ew_pair: i32,
+    pub low_board: i32,
+    pub high_board: i32,
+}
