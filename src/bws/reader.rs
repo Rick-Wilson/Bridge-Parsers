@@ -275,8 +275,8 @@ mod tests {
     use super::*;
 
     #[test]
+    #[ignore] // requires mdbtools to be installed
     fn test_check_mdbtools() {
-        // This test will pass if mdbtools is installed
         let result = check_mdbtools();
         assert!(result.is_ok(), "mdbtools should be installed");
     }
