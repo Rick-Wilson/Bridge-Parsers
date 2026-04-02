@@ -176,9 +176,10 @@ mod tests {
 
     #[test]
     fn test_parse_deal_tag() {
-        let (_, tag) =
-            tag_pair("[Deal \"N:K843.T542.J6.863 AQJ7.K.Q75.AT942 962.AJ7.KT82.J75 T5.Q9863.A943.KQ\"]")
-                .unwrap();
+        let (_, tag) = tag_pair(
+            "[Deal \"N:K843.T542.J6.863 AQJ7.K.Q75.AT942 962.AJ7.KT82.J75 T5.Q9863.A943.KQ\"]",
+        )
+        .unwrap();
         assert_eq!(tag.name, "Deal");
     }
 
@@ -243,7 +244,12 @@ several lines with blank lines inside.}
 "#;
         let boards = read_pbn(pbn).unwrap();
         // Should find exactly 2 boards, not more due to empty lines in commentary
-        assert_eq!(boards.len(), 2, "Found {} boards instead of 2", boards.len());
+        assert_eq!(
+            boards.len(),
+            2,
+            "Found {} boards instead of 2",
+            boards.len()
+        );
         assert_eq!(boards[0].number, Some(1));
         assert_eq!(boards[1].number, Some(2));
         // Verify deals are parsed

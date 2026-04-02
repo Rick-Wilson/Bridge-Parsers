@@ -82,27 +82,28 @@ impl UrlResolver {
             // Handle redirects
             if status.is_redirection() {
                 if let Some(location) = response.headers().get(reqwest::header::LOCATION) {
-                    let location_str = location
-                        .to_str()
-                        .map_err(|_| BridgeError::UrlResolution("Invalid redirect URL".to_string()))?;
+                    let location_str = location.to_str().map_err(|_| {
+                        BridgeError::UrlResolution("Invalid redirect URL".to_string())
+                    })?;
 
                     // Handle relative URLs
                     current_url = if location_str.starts_with("http") {
                         location_str.to_string()
                     } else {
                         // Parse the current URL and resolve the relative URL
-                        let base = url::Url::parse(&current_url)
-                            .map_err(|e| BridgeError::UrlResolution(format!("Invalid URL: {}", e)))?;
+                        let base = url::Url::parse(&current_url).map_err(|e| {
+                            BridgeError::UrlResolution(format!("Invalid URL: {}", e))
+                        })?;
                         base.join(location_str)
-                            .map_err(|e| BridgeError::UrlResolution(format!("Invalid redirect: {}", e)))?
+                            .map_err(|e| {
+                                BridgeError::UrlResolution(format!("Invalid redirect: {}", e))
+                            })?
                             .to_string()
                     };
 
                     redirects += 1;
                     if redirects > MAX_REDIRECTS {
-                        return Err(BridgeError::UrlResolution(
-                            "Too many redirects".to_string(),
-                        ));
+                        return Err(BridgeError::UrlResolution("Too many redirects".to_string()));
                     }
                     continue;
                 }

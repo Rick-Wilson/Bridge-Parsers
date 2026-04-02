@@ -10,6 +10,6 @@ pub use error::{BridgeError, Result};
 
 // Re-export types from bridge-types
 pub use bridge_types::{
-    Board, Card, Contract, Deal, Direction, Doubled, Hand, Rank, Strain, Suit, Vulnerability,
-    calculate_matchpoints, dealer_from_board_number,
+    calculate_matchpoints, dealer_from_board_number, Board, Card, Contract, Deal, Direction,
+    Doubled, Hand, Rank, Strain, Suit, Vulnerability,
 };

@@ -1,3 +1,4 @@
 /target
 activity-log.json
 .DS_Store
+.cargo/

@@ -1,6 +1,8 @@
-use crate::error::{BridgeError, Result};
-use crate::{Board, Card, Deal, Direction, Hand, Rank, Suit, Vulnerability, dealer_from_board_number};
 use super::tables::*;
+use crate::error::{BridgeError, Result};
+use crate::{
+    dealer_from_board_number, Board, Card, Deal, Direction, Hand, Rank, Suit, Vulnerability,
+};
 use std::path::Path;
 use std::process::Command;
 
@@ -33,7 +35,12 @@ impl BwsData {
     }
 
     /// Get pair of player names (North-South or East-West) for a table
-    pub fn get_pair_names(&self, section: i32, table: i32, is_ns: bool) -> (Option<&str>, Option<&str>) {
+    pub fn get_pair_names(
+        &self,
+        section: i32,
+        table: i32,
+        is_ns: bool,
+    ) -> (Option<&str>, Option<&str>) {
         if is_ns {
             (
                 self.get_player_at(section, table, "N"),
@@ -65,9 +72,7 @@ fn check_mdbtools() -> Result<()> {
 pub fn list_tables(path: &Path) -> Result<Vec<String>> {
     check_mdbtools()?;
 
-    let output = Command::new("mdb-tables")
-        .arg(path)
-        .output()?;
+    let output = Command::new("mdb-tables").arg(path).output()?;
 
     if !output.status.success() {
         return Err(BridgeError::Bws(format!(
@@ -82,10 +87,7 @@ pub fn list_tables(path: &Path) -> Result<Vec<String>> {
 
 /// Export a table as CSV
 fn export_table(path: &Path, table: &str) -> Result<String> {
-    let output = Command::new("mdb-export")
-        .arg(path)
-        .arg(table)
-        .output()?;
+    let output = Command::new("mdb-export").arg(path).arg(table).output()?;
 
     if !output.status.success() {
         return Err(BridgeError::Bws(format!(
@@ -174,30 +176,58 @@ fn hand_records_to_boards(records: &[HandRecordRow]) -> Vec<Board> {
         let mut deal = Deal::new();
 
         // Parse each hand from holdings
-        deal.set_hand(Direction::North, parse_hand_from_bws(
-            Suit::Spades, record.north_spades.as_deref(),
-            Suit::Hearts, record.north_hearts.as_deref(),
-            Suit::Diamonds, record.north_diamonds.as_deref(),
-            Suit::Clubs, record.north_clubs.as_deref(),
-        ));
-        deal.set_hand(Direction::East, parse_hand_from_bws(
-            Suit::Spades, record.east_spades.as_deref(),
-            Suit::Hearts, record.east_hearts.as_deref(),
-            Suit::Diamonds, record.east_diamonds.as_deref(),
-            Suit::Clubs, record.east_clubs.as_deref(),
-        ));
-        deal.set_hand(Direction::South, parse_hand_from_bws(
-            Suit::Spades, record.south_spades.as_deref(),
-            Suit::Hearts, record.south_hearts.as_deref(),
-            Suit::Diamonds, record.south_diamonds.as_deref(),
-            Suit::Clubs, record.south_clubs.as_deref(),
-        ));
-        deal.set_hand(Direction::West, parse_hand_from_bws(
-            Suit::Spades, record.west_spades.as_deref(),
-            Suit::Hearts, record.west_hearts.as_deref(),
-            Suit::Diamonds, record.west_diamonds.as_deref(),
-            Suit::Clubs, record.west_clubs.as_deref(),
-        ));
+        deal.set_hand(
+            Direction::North,
+            parse_hand_from_bws(
+                Suit::Spades,
+                record.north_spades.as_deref(),
+                Suit::Hearts,
+                record.north_hearts.as_deref(),
+                Suit::Diamonds,
+                record.north_diamonds.as_deref(),
+                Suit::Clubs,
+                record.north_clubs.as_deref(),
+            ),
+        );
+        deal.set_hand(
+            Direction::East,
+            parse_hand_from_bws(
+                Suit::Spades,
+                record.east_spades.as_deref(),
+                Suit::Hearts,
+                record.east_hearts.as_deref(),
+                Suit::Diamonds,
+                record.east_diamonds.as_deref(),
+                Suit::Clubs,
+                record.east_clubs.as_deref(),
+            ),
+        );
+        deal.set_hand(
+            Direction::South,
+            parse_hand_from_bws(
+                Suit::Spades,
+                record.south_spades.as_deref(),
+                Suit::Hearts,
+                record.south_hearts.as_deref(),
+                Suit::Diamonds,
+                record.south_diamonds.as_deref(),
+                Suit::Clubs,
+                record.south_clubs.as_deref(),
+            ),
+        );
+        deal.set_hand(
+            Direction::West,
+            parse_hand_from_bws(
+                Suit::Spades,
+                record.west_spades.as_deref(),
+                Suit::Hearts,
+                record.west_hearts.as_deref(),
+                Suit::Diamonds,
+                record.west_diamonds.as_deref(),
+                Suit::Clubs,
+                record.west_clubs.as_deref(),
+            ),
+        );
 
         let board_num = record.board as u32;
 
@@ -218,10 +248,14 @@ fn hand_records_to_boards(records: &[HandRecordRow]) -> Vec<Board> {
 /// Parse a hand from BWS holding strings
 /// BWS stores holdings as space-separated card values or PBN-style strings
 fn parse_hand_from_bws(
-    suit1: Suit, holding1: Option<&str>,
-    suit2: Suit, holding2: Option<&str>,
-    suit3: Suit, holding3: Option<&str>,
-    suit4: Suit, holding4: Option<&str>,
+    suit1: Suit,
+    holding1: Option<&str>,
+    suit2: Suit,
+    holding2: Option<&str>,
+    suit3: Suit,
+    holding3: Option<&str>,
+    suit4: Suit,
+    holding4: Option<&str>,
 ) -> Hand {
     let mut hand = Hand::new();
     add_cards_from_holding(&mut hand, suit1, holding1);
@@ -248,10 +282,7 @@ fn add_cards_from_holding(hand: &mut Hand, suit: Suit, s: Option<&str>) {
 
 /// Get unique board numbers from received data
 pub fn get_board_numbers(data: &BwsData) -> Vec<u32> {
-    let mut boards: Vec<u32> = data.received_data
-        .iter()
-        .map(|r| r.board as u32)
-        .collect();
+    let mut boards: Vec<u32> = data.received_data.iter().map(|r| r.board as u32).collect();
     boards.sort();
     boards.dedup();
     boards

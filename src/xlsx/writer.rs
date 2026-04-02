@@ -1,5 +1,5 @@
 use crate::error::Result;
-use crate::{Board, Contract, Direction, Hand, Rank, Suit, Vulnerability, calculate_matchpoints};
+use crate::{calculate_matchpoints, Board, Contract, Direction, Hand, Rank, Suit, Vulnerability};
 use rust_xlsxwriter::{
     ConditionalFormat3ColorScale, Format, FormatAlign, FormatBorder, Workbook, Worksheet,
 };
@@ -21,17 +21,17 @@ pub fn write_boards_to_xlsx(boards: &[Board], path: &Path) -> Result<()> {
 /// Write hand records to a worksheet
 fn write_hand_records_sheet(sheet: &mut Worksheet, boards: &[Board]) -> Result<()> {
     // Set column widths
-    sheet.set_column_width(0, 8)?;   // Board
-    sheet.set_column_width(1, 8)?;   // Dealer
-    sheet.set_column_width(2, 10)?;  // Vul
-    sheet.set_column_width(3, 14)?;  // North
-    sheet.set_column_width(4, 14)?;  // East
-    sheet.set_column_width(5, 14)?;  // South
-    sheet.set_column_width(6, 14)?;  // West
-    sheet.set_column_width(7, 6)?;   // N HCP
-    sheet.set_column_width(8, 6)?;   // E HCP
-    sheet.set_column_width(9, 6)?;   // S HCP
-    sheet.set_column_width(10, 6)?;  // W HCP
+    sheet.set_column_width(0, 8)?; // Board
+    sheet.set_column_width(1, 8)?; // Dealer
+    sheet.set_column_width(2, 10)?; // Vul
+    sheet.set_column_width(3, 14)?; // North
+    sheet.set_column_width(4, 14)?; // East
+    sheet.set_column_width(5, 14)?; // South
+    sheet.set_column_width(6, 14)?; // West
+    sheet.set_column_width(7, 6)?; // N HCP
+    sheet.set_column_width(8, 6)?; // E HCP
+    sheet.set_column_width(9, 6)?; // S HCP
+    sheet.set_column_width(10, 6)?; // W HCP
     sheet.set_column_width(11, 24)?; // DD Tricks
     sheet.set_column_width(12, 12)?; // Optimum Score
     sheet.set_column_width(13, 14)?; // Par Contract
@@ -44,10 +44,20 @@ fn write_hand_records_sheet(sheet: &mut Worksheet, boards: &[Board]) -> Result<(
 
     // Write headers
     let headers = [
-        "Board", "Dealer", "Vul",
-        "North", "East", "South", "West",
-        "N HCP", "E HCP", "S HCP", "W HCP",
-        "DD Tricks", "Optimum", "Par"
+        "Board",
+        "Dealer",
+        "Vul",
+        "North",
+        "East",
+        "South",
+        "West",
+        "N HCP",
+        "E HCP",
+        "S HCP",
+        "W HCP",
+        "DD Tricks",
+        "Optimum",
+        "Par",
     ];
 
     for (col, header) in headers.iter().enumerate() {
@@ -69,14 +79,24 @@ fn write_hand_records_sheet(sheet: &mut Worksheet, boards: &[Board]) -> Result<(
 
         // Dealer
         if let Some(dealer) = board.dealer {
-            sheet.write_string_with_format(row, 1, &dealer.to_char().to_string(), &center_format)?;
+            sheet.write_string_with_format(
+                row,
+                1,
+                &dealer.to_char().to_string(),
+                &center_format,
+            )?;
         }
 
         // Vulnerability
         sheet.write_string_with_format(row, 2, board.vulnerable.to_pbn(), &center_format)?;
 
         // Hands - format as compact notation
-        for (col_offset, dir) in [(3, Direction::North), (4, Direction::East), (5, Direction::South), (6, Direction::West)] {
+        for (col_offset, dir) in [
+            (3, Direction::North),
+            (4, Direction::East),
+            (5, Direction::South),
+            (6, Direction::West),
+        ] {
             let hand = board.deal.hand(dir);
             let hand_str = format_hand_compact(hand);
             sheet.write_string_with_format(row, col_offset, &hand_str, &left_format)?;
@@ -115,7 +135,8 @@ fn format_hand_compact(hand: &Hand) -> String {
     let mut parts = Vec::new();
 
     for suit in Suit::ALL {
-        let mut ranks: Vec<Rank> = hand.cards()
+        let mut ranks: Vec<Rank> = hand
+            .cards()
             .iter()
             .filter(|c| c.suit == suit)
             .map(|c| c.rank)
@@ -139,17 +160,20 @@ fn format_hand_compact(hand: &Hand) -> String {
 #[derive(Debug, Default, Clone)]
 struct PairMatchpoints {
     boards_played: u32,
-    total_mp_pct: f64,  // Sum of matchpoint percentages
+    total_mp_pct: f64, // Sum of matchpoint percentages
 }
 
 /// Calculate matchpoints for all results in BwsData
 /// Returns: (per-result matchpoints, per-pair totals)
 /// Pair key is (section, pair_number, is_ns)
-fn calculate_all_matchpoints(data: &crate::bws::BwsData) -> (Vec<Option<f64>>, HashMap<(i32, i32, bool), PairMatchpoints>) {
+fn calculate_all_matchpoints(
+    data: &crate::bws::BwsData,
+) -> (Vec<Option<f64>>, HashMap<(i32, i32, bool), PairMatchpoints>) {
     let results = &data.received_data;
 
     // Calculate scores for all results
-    let scores: Vec<Option<i32>> = results.iter()
+    let scores: Vec<Option<i32>> = results
+        .iter()
         .map(|r| calculate_score_for_result(r))
         .collect();
 
@@ -157,7 +181,8 @@ fn calculate_all_matchpoints(data: &crate::bws::BwsData) -> (Vec<Option<f64>>, H
     let mut board_results: HashMap<i32, Vec<(usize, i32)>> = HashMap::new();
     for (idx, result) in results.iter().enumerate() {
         if let Some(score) = scores[idx] {
-            board_results.entry(result.board)
+            board_results
+                .entry(result.board)
                 .or_default()
                 .push((idx, score));
         }
@@ -274,19 +299,19 @@ fn write_game_results_sheet(
     sheet.set_name("Game Results")?;
 
     // Set column widths
-    sheet.set_column_width(0, 8)?;   // Board
-    sheet.set_column_width(1, 8)?;   // Section
-    sheet.set_column_width(2, 6)?;   // Table
-    sheet.set_column_width(3, 6)?;   // Round
-    sheet.set_column_width(4, 8)?;   // NS Pair
-    sheet.set_column_width(5, 8)?;   // EW Pair
-    sheet.set_column_width(6, 10)?;  // Declarer
-    sheet.set_column_width(7, 10)?;  // Contract
-    sheet.set_column_width(8, 8)?;   // Result
-    sheet.set_column_width(9, 10)?;  // Lead Card
-    sheet.set_column_width(10, 8)?;  // Score
-    sheet.set_column_width(11, 8)?;  // NS MP%
-    sheet.set_column_width(12, 8)?;  // EW MP%
+    sheet.set_column_width(0, 8)?; // Board
+    sheet.set_column_width(1, 8)?; // Section
+    sheet.set_column_width(2, 6)?; // Table
+    sheet.set_column_width(3, 6)?; // Round
+    sheet.set_column_width(4, 8)?; // NS Pair
+    sheet.set_column_width(5, 8)?; // EW Pair
+    sheet.set_column_width(6, 10)?; // Declarer
+    sheet.set_column_width(7, 10)?; // Contract
+    sheet.set_column_width(8, 8)?; // Result
+    sheet.set_column_width(9, 10)?; // Lead Card
+    sheet.set_column_width(10, 8)?; // Score
+    sheet.set_column_width(11, 8)?; // NS MP%
+    sheet.set_column_width(12, 8)?; // EW MP%
 
     // Header format
     let header_format = Format::new()
@@ -296,9 +321,8 @@ fn write_game_results_sheet(
 
     // Write headers
     let headers = [
-        "Board", "Section", "Table", "Round",
-        "NS Pair", "EW Pair", "Declarer", "Contract", "Result", "Lead",
-        "Score", "NS MP%", "EW MP%"
+        "Board", "Section", "Table", "Round", "NS Pair", "EW Pair", "Declarer", "Contract",
+        "Result", "Lead", "Score", "NS MP%", "EW MP%",
     ];
 
     for (col, header) in headers.iter().enumerate() {
@@ -308,10 +332,14 @@ fn write_game_results_sheet(
     // Data formats
     let center_format = Format::new().set_align(FormatAlign::Center);
     let score_format = Format::new().set_align(FormatAlign::Right);
-    let mp_format = Format::new().set_align(FormatAlign::Right).set_num_format("0.0");
+    let mp_format = Format::new()
+        .set_align(FormatAlign::Right)
+        .set_num_format("0.0");
 
     // Calculate scores for all results
-    let scores: Vec<Option<i32>> = data.received_data.iter()
+    let scores: Vec<Option<i32>> = data
+        .received_data
+        .iter()
         .map(|r| calculate_score_for_result(r))
         .collect();
 
@@ -371,18 +399,18 @@ fn write_players_sheet(
     let has_masterpoints = member_data.is_some();
 
     // Set column widths
-    sheet.set_column_width(0, 10)?;  // Section
-    sheet.set_column_width(1, 6)?;   // Table
-    sheet.set_column_width(2, 10)?;  // Direction
-    sheet.set_column_width(3, 12)?;  // Player ID
-    sheet.set_column_width(4, 25)?;  // Name
-    sheet.set_column_width(5, 8)?;   // Boards
-    sheet.set_column_width(6, 10)?;  // Total MP%
-    sheet.set_column_width(7, 10)?;  // Avg MP%
+    sheet.set_column_width(0, 10)?; // Section
+    sheet.set_column_width(1, 6)?; // Table
+    sheet.set_column_width(2, 10)?; // Direction
+    sheet.set_column_width(3, 12)?; // Player ID
+    sheet.set_column_width(4, 25)?; // Name
+    sheet.set_column_width(5, 8)?; // Boards
+    sheet.set_column_width(6, 10)?; // Total MP%
+    sheet.set_column_width(7, 10)?; // Avg MP%
 
     if has_masterpoints {
-        sheet.set_column_width(8, 18)?;   // ACBL Rank
-        sheet.set_column_width(9, 12)?;   // ACBL Points
+        sheet.set_column_width(8, 18)?; // ACBL Rank
+        sheet.set_column_width(9, 12)?; // ACBL Points
     }
 
     // Header format
@@ -393,8 +421,12 @@ fn write_players_sheet(
 
     let center_format = Format::new().set_align(FormatAlign::Center);
     let left_format = Format::new().set_align(FormatAlign::Left);
-    let mp_format = Format::new().set_align(FormatAlign::Right).set_num_format("0.00");
-    let points_format = Format::new().set_align(FormatAlign::Right).set_num_format("#,##0.00");
+    let mp_format = Format::new()
+        .set_align(FormatAlign::Right)
+        .set_num_format("0.00");
+    let points_format = Format::new()
+        .set_align(FormatAlign::Right)
+        .set_num_format("#,##0.00");
 
     // Write headers
     sheet.write_string_with_format(0, 0, "Section", &header_format)?;
@@ -414,7 +446,8 @@ fn write_players_sheet(
     // Sort players by section, table, direction order (N, E, S, W)
     let mut players: Vec<_> = data.player_numbers.iter().collect();
     players.sort_by(|a, b| {
-        a.section.cmp(&b.section)
+        a.section
+            .cmp(&b.section)
             .then(a.table.cmp(&b.table))
             .then(direction_order(&a.direction).cmp(&direction_order(&b.direction)))
     });
@@ -450,11 +483,9 @@ fn write_players_sheet(
 
         // Look up ACBL masterpoint data if available
         if let Some(members) = member_data {
-            if let Some(member_info) = crate::acbl::lookup_member(
-                members,
-                &player.number,
-                player.name.as_deref(),
-            ) {
+            if let Some(member_info) =
+                crate::acbl::lookup_member(members, &player.number, player.name.as_deref())
+            {
                 sheet.write_string_with_format(row, 8, &member_info.rank, &left_format)?;
                 sheet.write_number_with_format(row, 9, member_info.points, &points_format)?;
             }
@@ -527,7 +558,8 @@ fn write_game_results_with_deals_sheet(
         .collect();
 
     // Calculate scores for all results
-    let scores: Vec<Option<i32>> = data.received_data
+    let scores: Vec<Option<i32>> = data
+        .received_data
         .iter()
         .map(|r| calculate_score_for_result(r))
         .collect();
@@ -535,7 +567,9 @@ fn write_game_results_with_deals_sheet(
     // Create sorted indices: by Board ascending, then Score descending
     let mut sorted_indices: Vec<usize> = (0..data.received_data.len()).collect();
     sorted_indices.sort_by(|&a, &b| {
-        let board_cmp = data.received_data[a].board.cmp(&data.received_data[b].board);
+        let board_cmp = data.received_data[a]
+            .board
+            .cmp(&data.received_data[b].board);
         if board_cmp != std::cmp::Ordering::Equal {
             return board_cmp;
         }
@@ -582,11 +616,9 @@ fn write_game_results_with_deals_sheet(
 
     // Write headers
     let headers = [
-        "Board", "Section", "Table", "Round",
-        "NS Pair", "EW Pair", "N Name", "E Name", "S Name", "W Name",
-        "Declarer", "Contract", "Result", "Lead",
-        "Score", "NS MP%", "EW MP%",
-        "Vul", "North", "East", "South", "West",
+        "Board", "Section", "Table", "Round", "NS Pair", "EW Pair", "N Name", "E Name", "S Name",
+        "W Name", "Declarer", "Contract", "Result", "Lead", "Score", "NS MP%", "EW MP%", "Vul",
+        "North", "East", "South", "West",
     ];
 
     for (col, header) in headers.iter().enumerate() {
@@ -705,10 +737,10 @@ fn write_sections_sheet(sheet: &mut Worksheet, data: &crate::bws::BwsData) -> Re
     sheet.set_name("Sections")?;
 
     // Set column widths
-    sheet.set_column_width(0, 10)?;  // Section
-    sheet.set_column_width(1, 8)?;   // Tables
-    sheet.set_column_width(2, 12)?;  // Winners
-    sheet.set_column_width(3, 14)?;  // Scoring Type
+    sheet.set_column_width(0, 10)?; // Section
+    sheet.set_column_width(1, 8)?; // Tables
+    sheet.set_column_width(2, 12)?; // Winners
+    sheet.set_column_width(3, 14)?; // Scoring Type
 
     // Header format
     let header_format = Format::new()

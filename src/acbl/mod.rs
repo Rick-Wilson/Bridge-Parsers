@@ -30,7 +30,7 @@ pub struct ClubGameResult {
 #[derive(Debug, Clone)]
 pub struct SectionResult {
     pub section: String,
-    pub direction: String,  // "NS" or "EW"
+    pub direction: String, // "NS" or "EW"
     pub pairs: Vec<PairResult>,
 }
 
@@ -80,10 +80,15 @@ pub fn fetch_with_browser_headers(url: &str) -> Result<String, String> {
 
     let status = response.status();
     if !status.is_success() {
-        return Err(format!("HTTP error: {} {}", status.as_u16(), status.canonical_reason().unwrap_or("Unknown")));
+        return Err(format!(
+            "HTTP error: {} {}",
+            status.as_u16(),
+            status.canonical_reason().unwrap_or("Unknown")
+        ));
     }
 
-    response.text()
+    response
+        .text()
         .map_err(|e| format!("Failed to read response: {}", e))
 }
 
@@ -100,8 +105,8 @@ fn parse_club_game_html(html: &str) -> Result<ClubGameResult, String> {
     let document = Html::parse_document(html);
 
     // Extract event metadata
-    let club_name = extract_text_by_selector(&document, "h1, .club-name, [class*='club']")
-        .unwrap_or_default();
+    let club_name =
+        extract_text_by_selector(&document, "h1, .club-name, [class*='club']").unwrap_or_default();
 
     let event_name = extract_text_by_selector(&document, "h2, .event-name, [class*='event']")
         .unwrap_or_default();
@@ -170,7 +175,10 @@ fn extract_tables_from_text(text: &str) -> Option<u32> {
     if let Some(idx) = text.find("Tables:") {
         let start = idx + "Tables:".len();
         let remaining = &text[start..].trim();
-        let num_str: String = remaining.chars().take_while(|c| c.is_ascii_digit()).collect();
+        let num_str: String = remaining
+            .chars()
+            .take_while(|c| c.is_ascii_digit())
+            .collect();
         return num_str.parse().ok();
     }
     None
@@ -178,8 +186,15 @@ fn extract_tables_from_text(text: &str) -> Option<u32> {
 
 fn extract_event_type_from_text(text: &str) -> Option<String> {
     // Look for common event types
-    let event_types = ["Unit Championship", "Club Championship", "Upgraded Club Championship",
-                       "Charity", "STaC", "NAP", "GNT"];
+    let event_types = [
+        "Unit Championship",
+        "Club Championship",
+        "Upgraded Club Championship",
+        "Charity",
+        "STaC",
+        "NAP",
+        "GNT",
+    ];
     for event_type in event_types {
         if text.contains(event_type) {
             return Some(event_type.to_string());
@@ -212,14 +227,13 @@ fn parse_section_results(document: &scraper::Html) -> Result<Vec<SectionResult>,
     let mut sections = Vec::new();
 
     // Look for tables with recap data
-    let table_selector = Selector::parse("table")
-        .map_err(|e| format!("Invalid selector: {:?}", e))?;
+    let table_selector =
+        Selector::parse("table").map_err(|e| format!("Invalid selector: {:?}", e))?;
 
-    let row_selector = Selector::parse("tbody tr, tr")
-        .map_err(|e| format!("Invalid selector: {:?}", e))?;
+    let row_selector =
+        Selector::parse("tbody tr, tr").map_err(|e| format!("Invalid selector: {:?}", e))?;
 
-    let cell_selector = Selector::parse("td")
-        .map_err(|e| format!("Invalid selector: {:?}", e))?;
+    let cell_selector = Selector::parse("td").map_err(|e| format!("Invalid selector: {:?}", e))?;
 
     // Try to identify which section/direction each table represents
     // by looking at nearby headers
@@ -280,7 +294,8 @@ fn extract_section_letter(text: &str) -> Option<String> {
     if text_upper.contains("SECTION") {
         for letter in ['A', 'B', 'C', 'D', 'E', 'F'] {
             if text_upper.contains(&format!("SECTION {}", letter))
-               || text_upper.contains(&format!("SECTION{}", letter)) {
+                || text_upper.contains(&format!("SECTION{}", letter))
+            {
                 return Some(letter.to_string());
             }
         }
@@ -301,8 +316,10 @@ fn parse_pair_result_row(cells: &[String]) -> Option<PairResult> {
     let names = &cells[1];
     let (player1, player2) = if names.contains(" - ") {
         let parts: Vec<&str> = names.splitn(2, " - ").collect();
-        (parts.get(0).unwrap_or(&"").to_string(),
-         parts.get(1).unwrap_or(&"").to_string())
+        (
+            parts.get(0).unwrap_or(&"").to_string(),
+            parts.get(1).unwrap_or(&"").to_string(),
+        )
     } else {
         (names.clone(), String::new())
     };
@@ -332,8 +349,12 @@ fn parse_pair_result_row(cells: &[String]) -> Option<PairResult> {
         }
 
         // Masterpoints usually contain "Black", "Silver", "Gold", "Red", "Platinum"
-        if cell.contains("Black") || cell.contains("Silver") || cell.contains("Gold")
-           || cell.contains("Red") || cell.contains("Platinum") {
+        if cell.contains("Black")
+            || cell.contains("Silver")
+            || cell.contains("Gold")
+            || cell.contains("Red")
+            || cell.contains("Platinum")
+        {
             masterpoints = Some(cell.clone());
         }
     }
@@ -345,7 +366,7 @@ fn parse_pair_result_row(cells: &[String]) -> Option<PairResult> {
             player1,
             player2,
             strat,
-            overall_a: None,  // Would need more sophisticated parsing
+            overall_a: None, // Would need more sophisticated parsing
             overall_b: None,
             overall_c: None,
             section_a: None,
@@ -364,10 +385,11 @@ fn parse_pair_result_row(cells: &[String]) -> Option<PairResult> {
 /// Returns a HashMap keyed by ACBL member number (as string)
 pub fn fetch_member_masterpoints(url: &str) -> Result<HashMap<String, MemberInfo>, String> {
     // Fetch the page
-    let response = reqwest::blocking::get(url)
-        .map_err(|e| format!("Failed to fetch URL: {}", e))?;
+    let response =
+        reqwest::blocking::get(url).map_err(|e| format!("Failed to fetch URL: {}", e))?;
 
-    let body = response.text()
+    let body = response
+        .text()
         .map_err(|e| format!("Failed to read response: {}", e))?;
 
     parse_member_html(&body)
@@ -381,11 +403,10 @@ fn parse_member_html(html: &str) -> Result<HashMap<String, MemberInfo>, String> 
     let document = Html::parse_document(html);
 
     // Try to find table rows - the D21 site uses DataTables
-    let row_selector = Selector::parse("table tbody tr")
-        .map_err(|e| format!("Invalid selector: {:?}", e))?;
+    let row_selector =
+        Selector::parse("table tbody tr").map_err(|e| format!("Invalid selector: {:?}", e))?;
 
-    let cell_selector = Selector::parse("td")
-        .map_err(|e| format!("Invalid selector: {:?}", e))?;
+    let cell_selector = Selector::parse("td").map_err(|e| format!("Invalid selector: {:?}", e))?;
 
     let mut members = HashMap::new();
 
@@ -412,10 +433,7 @@ fn parse_member_html(html: &str) -> Result<HashMap<String, MemberInfo>, String> 
                 continue;
             };
 
-            let points = points_str
-                .replace(",", "")
-                .parse::<f64>()
-                .unwrap_or(0.0);
+            let points = points_str.replace(",", "").parse::<f64>().unwrap_or(0.0);
 
             let info = MemberInfo {
                 name: name.clone(),
@@ -493,14 +511,13 @@ fn parse_member_html_alternate(html: &str) -> Result<HashMap<String, MemberInfo>
     let mut members = HashMap::new();
 
     // Try to find any table
-    let table_selector = Selector::parse("table")
-        .map_err(|e| format!("Invalid selector: {:?}", e))?;
+    let table_selector =
+        Selector::parse("table").map_err(|e| format!("Invalid selector: {:?}", e))?;
 
-    let row_selector = Selector::parse("tr")
-        .map_err(|e| format!("Invalid selector: {:?}", e))?;
+    let row_selector = Selector::parse("tr").map_err(|e| format!("Invalid selector: {:?}", e))?;
 
-    let cell_selector = Selector::parse("td, th")
-        .map_err(|e| format!("Invalid selector: {:?}", e))?;
+    let cell_selector =
+        Selector::parse("td, th").map_err(|e| format!("Invalid selector: {:?}", e))?;
 
     for table in document.select(&table_selector) {
         for row in table.select(&row_selector) {
@@ -521,7 +538,11 @@ fn parse_member_html_alternate(html: &str) -> Result<HashMap<String, MemberInfo>
                         let name = if i > 0 { &cells[0] } else { continue };
                         let rank = if i > 1 { &cells[i - 1] } else { "" };
                         let location = if i > 2 { &cells[1] } else { "" };
-                        let unit = if i + 1 < cells.len() { &cells[i + 1] } else { "" };
+                        let unit = if i + 1 < cells.len() {
+                            &cells[i + 1]
+                        } else {
+                            ""
+                        };
 
                         let info = MemberInfo {
                             name: name.clone(),

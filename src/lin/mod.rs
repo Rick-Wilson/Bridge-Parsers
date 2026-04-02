@@ -64,12 +64,7 @@ impl LinData {
 
 /// Parse a LIN string into LinData
 pub fn parse_lin(lin_str: &str) -> Result<LinData> {
-    let mut player_names = [
-        String::new(),
-        String::new(),
-        String::new(),
-        String::new(),
-    ];
+    let mut player_names = [String::new(), String::new(), String::new(), String::new()];
     let mut dealer = Direction::North;
     let mut deal = Deal::new();
     let mut vulnerability = Vulnerability::None;
@@ -216,7 +211,12 @@ fn parse_md(md_str: &str) -> Option<(Direction, Deal)> {
     let mut deal = Deal::new();
 
     // BBO uses S, W, N, E order for hands (same as player names)
-    let directions = [Direction::South, Direction::West, Direction::North, Direction::East];
+    let directions = [
+        Direction::South,
+        Direction::West,
+        Direction::North,
+        Direction::East,
+    ];
 
     for (i, hand_str) in hand_strs.iter().enumerate().take(3) {
         if let Some(hand) = parse_lin_hand(hand_str) {
@@ -331,8 +331,8 @@ pub fn parse_lin_file(content: &str) -> Result<Vec<LinData>> {
 /// Extract and parse LIN data from a BBO handviewer URL
 pub fn parse_lin_from_url(url: &str) -> Result<LinData> {
     // Parse the URL to extract the lin parameter
-    let parsed = url::Url::parse(url)
-        .map_err(|e| BridgeError::Lin(format!("Invalid URL: {}", e)))?;
+    let parsed =
+        url::Url::parse(url).map_err(|e| BridgeError::Lin(format!("Invalid URL: {}", e)))?;
 
     // Find the lin parameter
     let lin_param = parsed

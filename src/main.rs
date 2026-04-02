@@ -4,9 +4,9 @@ use std::path::PathBuf;
 
 use bridge_parsers::acbl;
 use bridge_parsers::bws;
-use bridge_parsers::Direction;
 use bridge_parsers::pbn;
 use bridge_parsers::xlsx;
+use bridge_parsers::Direction;
 
 #[derive(Parser)]
 #[command(name = "bridge-parsers")]
@@ -70,10 +70,19 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Convert { input, output, masterpoints_url } => {
+        Commands::Convert {
+            input,
+            output,
+            masterpoints_url,
+        } => {
             convert(&input, &output, masterpoints_url.as_deref())?;
         }
-        Commands::Combine { pbn, bws, output, masterpoints_url } => {
+        Commands::Combine {
+            pbn,
+            bws,
+            output,
+            masterpoints_url,
+        } => {
             combine(&pbn, &bws, &output, masterpoints_url.as_deref())?;
         }
         Commands::Info { input } => {
@@ -190,7 +199,12 @@ fn convert(input: &PathBuf, output: &PathBuf, masterpoints_url: Option<&str>) ->
     Ok(())
 }
 
-fn combine(pbn_path: &PathBuf, bws_path: &PathBuf, output: &PathBuf, masterpoints_url: Option<&str>) -> Result<()> {
+fn combine(
+    pbn_path: &PathBuf,
+    bws_path: &PathBuf,
+    output: &PathBuf,
+    masterpoints_url: Option<&str>,
+) -> Result<()> {
     // Fetch masterpoint data if URL provided
     let member_data = if let Some(url) = masterpoints_url {
         println!("Fetching masterpoint data from: {}", url);
@@ -253,7 +267,11 @@ fn info(input: &PathBuf) -> Result<()> {
 
             println!("Sections: {}", data.sections.len());
             for section in &data.sections {
-                println!("  Section {}: {} tables", section.letter.trim(), section.tables);
+                println!(
+                    "  Section {}: {} tables",
+                    section.letter.trim(),
+                    section.tables
+                );
             }
             println!();
 
