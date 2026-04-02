@@ -79,12 +79,7 @@ fn write_hand_records_sheet(sheet: &mut Worksheet, boards: &[Board]) -> Result<(
 
         // Dealer
         if let Some(dealer) = board.dealer {
-            sheet.write_string_with_format(
-                row,
-                1,
-                &dealer.to_char().to_string(),
-                &center_format,
-            )?;
+            sheet.write_string_with_format(row, 1, dealer.to_char().to_string(), &center_format)?;
         }
 
         // Vulnerability
@@ -163,19 +158,19 @@ struct PairMatchpoints {
     total_mp_pct: f64, // Sum of matchpoint percentages
 }
 
+/// Per-pair matchpoint totals keyed by (section, pair_number, is_ns)
+type PairMatchpointTotals = HashMap<(i32, i32, bool), PairMatchpoints>;
+
 /// Calculate matchpoints for all results in BwsData
 /// Returns: (per-result matchpoints, per-pair totals)
 /// Pair key is (section, pair_number, is_ns)
 fn calculate_all_matchpoints(
     data: &crate::bws::BwsData,
-) -> (Vec<Option<f64>>, HashMap<(i32, i32, bool), PairMatchpoints>) {
+) -> (Vec<Option<f64>>, PairMatchpointTotals) {
     let results = &data.received_data;
 
     // Calculate scores for all results
-    let scores: Vec<Option<i32>> = results
-        .iter()
-        .map(|r| calculate_score_for_result(r))
-        .collect();
+    let scores: Vec<Option<i32>> = results.iter().map(calculate_score_for_result).collect();
 
     // Group results by board for matchpoint calculation
     let mut board_results: HashMap<i32, Vec<(usize, i32)>> = HashMap::new();
@@ -190,7 +185,7 @@ fn calculate_all_matchpoints(
 
     // Calculate matchpoints for each board
     let mut matchpoints: Vec<Option<f64>> = vec![None; results.len()];
-    for (_board, board_scores) in &board_results {
+    for board_scores in board_results.values() {
         let ns_scores: Vec<i32> = board_scores.iter().map(|(_, s)| *s).collect();
         let mps = calculate_matchpoints(&ns_scores);
         for (i, (idx, _)) in board_scores.iter().enumerate() {
@@ -340,7 +335,7 @@ fn write_game_results_sheet(
     let scores: Vec<Option<i32>> = data
         .received_data
         .iter()
-        .map(|r| calculate_score_for_result(r))
+        .map(calculate_score_for_result)
         .collect();
 
     // Write result data (in original order to match matchpoints indices)
@@ -561,7 +556,7 @@ fn write_game_results_with_deals_sheet(
     let scores: Vec<Option<i32>> = data
         .received_data
         .iter()
-        .map(|r| calculate_score_for_result(r))
+        .map(calculate_score_for_result)
         .collect();
 
     // Create sorted indices: by Board ascending, then Score descending
@@ -701,7 +696,7 @@ fn write_game_results_with_deals_sheet(
                 (21, Direction::West),
             ] {
                 let hand = board.deal.hand(dir);
-                if hand.len() > 0 {
+                if !hand.is_empty() {
                     let hand_str = format_hand_compact(hand);
                     sheet.write_string_with_format(row, col_offset, &hand_str, &left_format)?;
                 }

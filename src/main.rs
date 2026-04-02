@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use bridge_parsers::acbl;
 use bridge_parsers::bws;
@@ -96,7 +96,7 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn convert(input: &PathBuf, output: &PathBuf, masterpoints_url: Option<&str>) -> Result<()> {
+fn convert(input: &Path, output: &Path, masterpoints_url: Option<&str>) -> Result<()> {
     let input_ext = input
         .extension()
         .and_then(|e| e.to_str())
@@ -200,9 +200,9 @@ fn convert(input: &PathBuf, output: &PathBuf, masterpoints_url: Option<&str>) ->
 }
 
 fn combine(
-    pbn_path: &PathBuf,
-    bws_path: &PathBuf,
-    output: &PathBuf,
+    pbn_path: &Path,
+    bws_path: &Path,
+    output: &Path,
     masterpoints_url: Option<&str>,
 ) -> Result<()> {
     // Fetch masterpoint data if URL provided
@@ -242,7 +242,7 @@ fn combine(
     Ok(())
 }
 
-fn info(input: &PathBuf) -> Result<()> {
+fn info(input: &Path) -> Result<()> {
     let ext = input
         .extension()
         .and_then(|e| e.to_str())
@@ -303,7 +303,7 @@ fn info(input: &PathBuf) -> Result<()> {
     Ok(())
 }
 
-fn validate(input: &PathBuf) -> Result<()> {
+fn validate(input: &Path) -> Result<()> {
     let ext = input
         .extension()
         .and_then(|e| e.to_str())
@@ -372,7 +372,7 @@ fn print_board_info(board: &bridge_parsers::Board) {
     // Print compact deal
     for dir in Direction::ALL {
         let hand = board.deal.hand(dir);
-        if hand.len() > 0 {
+        if !hand.is_empty() {
             println!("  {}: {}", dir, hand.to_pbn());
         }
     }

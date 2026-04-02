@@ -100,7 +100,7 @@ pub fn fetch_club_game_results(url: &str) -> Result<ClubGameResult, String> {
 
 /// Parse ACBL Live for Clubs HTML
 fn parse_club_game_html(html: &str) -> Result<ClubGameResult, String> {
-    use scraper::{Html, Selector};
+    use scraper::Html;
 
     let document = Html::parse_document(html);
 
@@ -227,18 +227,13 @@ fn parse_section_results(document: &scraper::Html) -> Result<Vec<SectionResult>,
     let mut sections = Vec::new();
 
     // Look for tables with recap data
-    let table_selector =
+    let _table_selector =
         Selector::parse("table").map_err(|e| format!("Invalid selector: {:?}", e))?;
 
     let row_selector =
         Selector::parse("tbody tr, tr").map_err(|e| format!("Invalid selector: {:?}", e))?;
 
     let cell_selector = Selector::parse("td").map_err(|e| format!("Invalid selector: {:?}", e))?;
-
-    // Try to identify which section/direction each table represents
-    // by looking at nearby headers
-    let header_selector = Selector::parse("h3, h4, .section-header, caption")
-        .map_err(|e| format!("Invalid selector: {:?}", e))?;
 
     let mut current_section = "A".to_string();
     let mut current_direction = "NS".to_string();
@@ -317,7 +312,7 @@ fn parse_pair_result_row(cells: &[String]) -> Option<PairResult> {
     let (player1, player2) = if names.contains(" - ") {
         let parts: Vec<&str> = names.splitn(2, " - ").collect();
         (
-            parts.get(0).unwrap_or(&"").to_string(),
+            parts.first().unwrap_or(&"").to_string(),
             parts.get(1).unwrap_or(&"").to_string(),
         )
     } else {
@@ -330,7 +325,7 @@ fn parse_pair_result_row(cells: &[String]) -> Option<PairResult> {
     let mut masterpoints = None;
     let mut strat = String::new();
 
-    for (i, cell) in cells.iter().enumerate().skip(2) {
+    for (_i, cell) in cells.iter().enumerate().skip(2) {
         // Strat is usually a single letter: A, B, or C
         if cell.len() == 1 && ["A", "B", "C"].contains(&cell.as_str()) && strat.is_empty() {
             strat = cell.clone();

@@ -112,10 +112,8 @@ pub fn read_bws(path: &Path) -> Result<BwsData> {
     if tables.contains(&"Section".to_string()) {
         let csv = export_table(path, "Section")?;
         let mut reader = csv::Reader::from_reader(csv.as_bytes());
-        for result in reader.deserialize() {
-            if let Ok(row) = result {
-                data.sections.push(row);
-            }
+        for row in reader.deserialize().flatten() {
+            data.sections.push(row);
         }
     }
 
@@ -123,10 +121,8 @@ pub fn read_bws(path: &Path) -> Result<BwsData> {
     if tables.contains(&"PlayerNames".to_string()) {
         let csv = export_table(path, "PlayerNames")?;
         let mut reader = csv::Reader::from_reader(csv.as_bytes());
-        for result in reader.deserialize() {
-            if let Ok(row) = result {
-                data.player_names.push(row);
-            }
+        for row in reader.deserialize().flatten() {
+            data.player_names.push(row);
         }
     }
 
@@ -134,10 +130,8 @@ pub fn read_bws(path: &Path) -> Result<BwsData> {
     if tables.contains(&"ReceivedData".to_string()) {
         let csv = export_table(path, "ReceivedData")?;
         let mut reader = csv::Reader::from_reader(csv.as_bytes());
-        for result in reader.deserialize() {
-            if let Ok(row) = result {
-                data.received_data.push(row);
-            }
+        for row in reader.deserialize().flatten() {
+            data.received_data.push(row);
         }
     }
 
@@ -145,10 +139,8 @@ pub fn read_bws(path: &Path) -> Result<BwsData> {
     if tables.contains(&"PlayerNumbers".to_string()) {
         let csv = export_table(path, "PlayerNumbers")?;
         let mut reader = csv::Reader::from_reader(csv.as_bytes());
-        for result in reader.deserialize() {
-            if let Ok(row) = result {
-                data.player_numbers.push(row);
-            }
+        for row in reader.deserialize().flatten() {
+            data.player_numbers.push(row);
         }
     }
 
@@ -156,10 +148,8 @@ pub fn read_bws(path: &Path) -> Result<BwsData> {
     if tables.contains(&"RoundData".to_string()) {
         let csv = export_table(path, "RoundData")?;
         let mut reader = csv::Reader::from_reader(csv.as_bytes());
-        for result in reader.deserialize() {
-            if let Ok(row) = result {
-                data.round_data.push(row);
-            }
+        for row in reader.deserialize().flatten() {
+            data.round_data.push(row);
         }
     }
 
@@ -167,10 +157,8 @@ pub fn read_bws(path: &Path) -> Result<BwsData> {
     if tables.contains(&"HandRecord".to_string()) {
         let csv = export_table(path, "HandRecord")?;
         let mut reader = csv::Reader::from_reader(csv.as_bytes());
-        for result in reader.deserialize() {
-            if let Ok(row) = result {
-                data.hand_records.push(row);
-            }
+        for row in reader.deserialize().flatten() {
+            data.hand_records.push(row);
         }
     }
 
@@ -190,55 +178,39 @@ fn hand_records_to_boards(records: &[HandRecordRow]) -> Vec<Board> {
         // Parse each hand from holdings
         deal.set_hand(
             Direction::North,
-            parse_hand_from_bws(
-                Suit::Spades,
-                record.north_spades.as_deref(),
-                Suit::Hearts,
-                record.north_hearts.as_deref(),
-                Suit::Diamonds,
-                record.north_diamonds.as_deref(),
-                Suit::Clubs,
-                record.north_clubs.as_deref(),
-            ),
+            parse_hand_from_bws(&[
+                (Suit::Spades, record.north_spades.as_deref()),
+                (Suit::Hearts, record.north_hearts.as_deref()),
+                (Suit::Diamonds, record.north_diamonds.as_deref()),
+                (Suit::Clubs, record.north_clubs.as_deref()),
+            ]),
         );
         deal.set_hand(
             Direction::East,
-            parse_hand_from_bws(
-                Suit::Spades,
-                record.east_spades.as_deref(),
-                Suit::Hearts,
-                record.east_hearts.as_deref(),
-                Suit::Diamonds,
-                record.east_diamonds.as_deref(),
-                Suit::Clubs,
-                record.east_clubs.as_deref(),
-            ),
+            parse_hand_from_bws(&[
+                (Suit::Spades, record.east_spades.as_deref()),
+                (Suit::Hearts, record.east_hearts.as_deref()),
+                (Suit::Diamonds, record.east_diamonds.as_deref()),
+                (Suit::Clubs, record.east_clubs.as_deref()),
+            ]),
         );
         deal.set_hand(
             Direction::South,
-            parse_hand_from_bws(
-                Suit::Spades,
-                record.south_spades.as_deref(),
-                Suit::Hearts,
-                record.south_hearts.as_deref(),
-                Suit::Diamonds,
-                record.south_diamonds.as_deref(),
-                Suit::Clubs,
-                record.south_clubs.as_deref(),
-            ),
+            parse_hand_from_bws(&[
+                (Suit::Spades, record.south_spades.as_deref()),
+                (Suit::Hearts, record.south_hearts.as_deref()),
+                (Suit::Diamonds, record.south_diamonds.as_deref()),
+                (Suit::Clubs, record.south_clubs.as_deref()),
+            ]),
         );
         deal.set_hand(
             Direction::West,
-            parse_hand_from_bws(
-                Suit::Spades,
-                record.west_spades.as_deref(),
-                Suit::Hearts,
-                record.west_hearts.as_deref(),
-                Suit::Diamonds,
-                record.west_diamonds.as_deref(),
-                Suit::Clubs,
-                record.west_clubs.as_deref(),
-            ),
+            parse_hand_from_bws(&[
+                (Suit::Spades, record.west_spades.as_deref()),
+                (Suit::Hearts, record.west_hearts.as_deref()),
+                (Suit::Diamonds, record.west_diamonds.as_deref()),
+                (Suit::Clubs, record.west_clubs.as_deref()),
+            ]),
         );
 
         let board_num = record.board as u32;
@@ -259,21 +231,11 @@ fn hand_records_to_boards(records: &[HandRecordRow]) -> Vec<Board> {
 
 /// Parse a hand from BWS holding strings
 /// BWS stores holdings as space-separated card values or PBN-style strings
-fn parse_hand_from_bws(
-    suit1: Suit,
-    holding1: Option<&str>,
-    suit2: Suit,
-    holding2: Option<&str>,
-    suit3: Suit,
-    holding3: Option<&str>,
-    suit4: Suit,
-    holding4: Option<&str>,
-) -> Hand {
+fn parse_hand_from_bws(holdings: &[(Suit, Option<&str>)]) -> Hand {
     let mut hand = Hand::new();
-    add_cards_from_holding(&mut hand, suit1, holding1);
-    add_cards_from_holding(&mut hand, suit2, holding2);
-    add_cards_from_holding(&mut hand, suit3, holding3);
-    add_cards_from_holding(&mut hand, suit4, holding4);
+    for &(suit, holding) in holdings {
+        add_cards_from_holding(&mut hand, suit, holding);
+    }
     hand
 }
 
