@@ -85,6 +85,16 @@ pub struct PlayerNumberRow {
     pub name: Option<String>,
 }
 
+/// A session record from the Session table
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct SessionRow {
+    #[serde(rename = "ID")]
+    pub id: i32,
+    pub name: Option<String>,
+    pub date: Option<String>,
+}
+
 /// A round assignment (maps pairs to tables for each round)
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "PascalCase")]

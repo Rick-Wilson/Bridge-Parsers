@@ -10,6 +10,7 @@ use std::process::Command;
 #[derive(Debug, Default)]
 pub struct BwsData {
     pub sections: Vec<SectionRow>,
+    pub sessions: Vec<SessionRow>,
     pub player_names: Vec<PlayerNameRow>,
     pub player_numbers: Vec<PlayerNumberRow>,
     pub round_data: Vec<RoundDataRow>,
@@ -114,6 +115,15 @@ pub fn read_bws(path: &Path) -> Result<BwsData> {
         let mut reader = csv::Reader::from_reader(csv.as_bytes());
         for row in reader.deserialize().flatten() {
             data.sections.push(row);
+        }
+    }
+
+    // Read Session table (event name and date)
+    if tables.contains(&"Session".to_string()) {
+        let csv = export_table(path, "Session")?;
+        let mut reader = csv::Reader::from_reader(csv.as_bytes());
+        for row in reader.deserialize().flatten() {
+            data.sessions.push(row);
         }
     }
 
