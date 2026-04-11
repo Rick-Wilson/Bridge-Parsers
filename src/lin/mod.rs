@@ -39,6 +39,85 @@ pub struct LinData {
 }
 
 impl LinData {
+    /// Convert this LIN data to a Board with auction, play, and player names.
+    pub fn to_board(&self, board_number: Option<u32>) -> crate::Board {
+        use crate::{Auction, Board, Call, PlayerNames, PlaySequence, Suit};
+
+        let mut board = Board::new()
+            .with_dealer(self.dealer)
+            .with_vulnerability(self.vulnerability)
+            .with_deal(self.deal.clone());
+
+        if let Some(num) = board_number {
+            board = board.with_number(num);
+        }
+
+        // Player names (pn order: S, W, N, E)
+        let names = PlayerNames {
+            south: Some(self.player_names[0].clone()),
+            west: Some(self.player_names[1].clone()),
+            north: Some(self.player_names[2].clone()),
+            east: Some(self.player_names[3].clone()),
+        };
+        board = board.with_player_names(names);
+
+        // Auction
+        if !self.auction.is_empty() {
+            let mut auction = Auction::new(self.dealer);
+            for bid in &self.auction {
+                let call = if bid.bid.eq_ignore_ascii_case("p") {
+                    Call::Pass
+                } else if bid.bid.eq_ignore_ascii_case("d") {
+                    Call::Double
+                } else if bid.bid.eq_ignore_ascii_case("r") {
+                    Call::Redouble
+                } else {
+                    match Call::from_pbn(&bid.bid.to_uppercase()) {
+                        Some(c) => c,
+                        None => continue,
+                    }
+                };
+                auction.add_annotated_call(call, bid.annotation.clone());
+            }
+            board = board.with_auction(auction);
+        }
+
+        // Determine declarer and contract from the auction
+        if let Some(ref auction) = board.auction {
+            if let Some(fc) = auction.final_contract() {
+                board.declarer = Some(fc.declarer);
+                board.contract = Some(fc.to_pbn());
+            }
+        }
+
+        // Play sequence (opening lead = first card)
+        if !self.play.is_empty() {
+            if let Some(declarer) = board.declarer {
+                let leader = declarer.next();
+                // Determine trump suit from contract
+                let trump = board.contract.as_ref().and_then(|c| {
+                    if c.contains('S') { Some(Suit::Spades) }
+                    else if c.contains('H') { Some(Suit::Hearts) }
+                    else if c.contains('D') { Some(Suit::Diamonds) }
+                    else if c.contains('C') { Some(Suit::Clubs) }
+                    else { None }
+                });
+                let mut play_seq = PlaySequence::new(leader, trump);
+                for card in &self.play {
+                    play_seq.play_card(*card);
+                }
+                board = board.with_play(play_seq);
+            }
+        }
+
+        // Result
+        if let Some(claim) = self.claim {
+            board = board.with_result(claim as i8);
+        }
+
+        board
+    }
+
     /// Format the cardplay as a trick-by-trick string
     /// Output format: "D2-DA-D6-D5|S3-S2-SQ-SA|..."
     pub fn format_cardplay_by_trick(&self) -> String {
