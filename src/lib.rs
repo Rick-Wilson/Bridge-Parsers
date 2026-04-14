@@ -11,6 +11,6 @@ pub use error::{BridgeError, Result};
 // Re-export types from bridge-types
 pub use bridge_types::{
     calculate_matchpoints, dealer_from_board_number, AnnotatedCall, Auction, Board, Call, Card,
-    Contract, Deal, Direction, Doubled, Hand, PlaySequence, PlayerNames, Rank, Strain, Suit,
-    Trick, Vulnerability,
+    Contract, Deal, Direction, Doubled, Hand, PlaySequence, PlayerNames, Rank, Strain, Suit, Trick,
+    Vulnerability,
 };

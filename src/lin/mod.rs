@@ -41,7 +41,7 @@ pub struct LinData {
 impl LinData {
     /// Convert this LIN data to a Board with auction, play, and player names.
     pub fn to_board(&self, board_number: Option<u32>) -> crate::Board {
-        use crate::{Auction, Board, Call, PlayerNames, PlaySequence, Suit};
+        use crate::{Auction, Board, Call, PlaySequence, PlayerNames, Suit};
 
         let mut board = Board::new()
             .with_dealer(self.dealer)
@@ -96,11 +96,17 @@ impl LinData {
                 let leader = declarer.next();
                 // Determine trump suit from contract
                 let trump = board.contract.as_ref().and_then(|c| {
-                    if c.contains('S') { Some(Suit::Spades) }
-                    else if c.contains('H') { Some(Suit::Hearts) }
-                    else if c.contains('D') { Some(Suit::Diamonds) }
-                    else if c.contains('C') { Some(Suit::Clubs) }
-                    else { None }
+                    if c.contains('S') {
+                        Some(Suit::Spades)
+                    } else if c.contains('H') {
+                        Some(Suit::Hearts)
+                    } else if c.contains('D') {
+                        Some(Suit::Diamonds)
+                    } else if c.contains('C') {
+                        Some(Suit::Clubs)
+                    } else {
+                        None
+                    }
                 });
                 let mut play_seq = PlaySequence::new(leader, trump);
                 for card in &self.play {

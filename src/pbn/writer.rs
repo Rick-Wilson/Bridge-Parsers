@@ -131,10 +131,7 @@ pub fn board_to_pbn(board: &Board) -> String {
 
     // Play
     if let Some(ref play) = board.play {
-        lines.push(format!(
-            "[Play \"{}\"]",
-            play.opening_leader.to_char()
-        ));
+        lines.push(format!("[Play \"{}\"]", play.opening_leader.to_char()));
         lines.push(format_play(play));
     }
 
